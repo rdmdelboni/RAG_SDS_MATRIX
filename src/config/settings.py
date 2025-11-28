@@ -70,6 +70,17 @@ class ProcessingConfig:
         default_factory=lambda: int(os.getenv("MAX_FILE_SIZE_MB", "50"))
     )
     heuristic_confidence_threshold: float = 0.82  # Skip LLM if heuristics are confident
+    # OCR fallback thresholds
+    ocr_min_avg_chars_per_page: int = field(
+        default_factory=lambda: int(os.getenv("OCR_MIN_AVG_CHARS_PER_PAGE", "400"))
+    )
+    ocr_max_blank_page_ratio: float = field(
+        default_factory=lambda: float(os.getenv("OCR_MAX_BLANK_PAGE_RATIO", "0.40"))
+    )
+    ocr_fallback_enabled: bool = field(
+        default_factory=lambda: os.getenv("OCR_FALLBACK_ENABLED", "true").lower()
+        in ("true", "1", "yes")
+    )
 
 
 @dataclass(frozen=True)

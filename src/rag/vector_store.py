@@ -48,14 +48,27 @@ class VectorStore:
         self.persist_directory = persist_directory or get_settings().paths.chroma_db
         self.persist_directory.mkdir(parents=True, exist_ok=True)
 
-        # Get embeddings from Ollama client
+        # Get embeddings from Ollama client (lazy - don't call yet)
         self.ollama = get_ollama_client()
-        self.embeddings = self.ollama.get_embeddings()
+        self._embeddings = None  # Lazy load embeddings
+        self._embeddings_initialized = False
 
         # Initialize ChromaDB
         self._db: Chroma | None = None
 
         logger.info("VectorStore initialized at: %s", self.persist_directory)
+
+    @property
+    def embeddings(self):
+        """Get embeddings (lazy initialization)."""
+        if not self._embeddings_initialized:
+            try:
+                self._embeddings = self.ollama.get_embeddings()
+                self._embeddings_initialized = True
+            except Exception as e:
+                logger.error("Failed to initialize embeddings: %s", e)
+                self._embeddings_initialized = True
+        return self._embeddings
 
     @property
     def db(self) -> Chroma:

@@ -6,7 +6,7 @@ from __future__ import annotations
 
 import customtkinter as ctk
 
-from ..components import Table, TitleLabel
+from ..components import SimpleTable, TitleLabel
 
 
 class StatusTab(ctk.CTkFrame):
@@ -45,14 +45,15 @@ class StatusTab(ctk.CTkFrame):
         metrics_frame = ctk.CTkFrame(self, fg_color="transparent")
         metrics_frame.pack(fill="both", expand=True, padx=20, pady=10)
 
-        self.app.status_metrics_table = Table(
+        self.app.status_metrics_table = SimpleTable(
             metrics_frame,
             headers=["Métrica", "Valor"],
             rows=[],
             fg_color=self.app.colors["input"],
             text_color=self.app.colors["text"],
+            header_color=self.app.colors["surface"],
             accent_color=self.app.colors["accent"],
-            height=400,
+            min_col_width=120,
         )
         self.app.status_metrics_table.pack(fill="both", expand=True, padx=4, pady=4)
 

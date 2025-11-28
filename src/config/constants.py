@@ -71,16 +71,19 @@ PATTERNS: Final[dict[str, re.Pattern[str]]] = {
         re.IGNORECASE,
     ),
     "product_name": re.compile(
-        r"(?:nome\s*(?:comercial|do\s+produto)|"
+        r"(?:nome\s*(?:comercial|do\s+produto|químico)|"
         r"identifica(?:ç|c)[aã]o\s+do\s+produto|"
         r"identificador\s+do\s+produto|"
-        r"produto)\s*[:\-]\s*(.{3,120})",
+        r"product\s+name|"
+        r"chemical\s+name|"
+        r"produto)\s*[:\-]\s*([A-ZÀÁÂÃÉÊÍÓÔÕÚÇ][A-Za-zÀ-ÿ0-9\s\-,()./%]+(?:[A-Za-zÀ-ÿ]|\d{1,3}%)[^\n]{0,80})",
         re.IGNORECASE,
     ),
     "manufacturer": re.compile(
         r"(?:fabricante|fabricado\s+por|"
-        r"fornecedor(?:\/distribuidor)?|"
-        r"empresa|raz[aã]o\s+social)\s*[:\-]\s*(.{3,120})",
+        r"fornecedor(?:\\/distribuidor)?|"
+        r"manufacturer|"
+        r"empresa|raz[aã]o\s+social)\s*[:\-]\s*([A-ZÀÁÂÃÉÊÍÓÔÕÚÇ][A-Za-zÀ-ÿ0-9\s\-,&.]+?(?:LTDA|S\\.?A\\.?|INC|LLC|GMBH|LTD)?[^\n]{0,100})",
         re.IGNORECASE,
     ),
     "packing_group": re.compile(
@@ -90,9 +93,10 @@ PATTERNS: Final[dict[str, re.Pattern[str]]] = {
     "incompatibilities": re.compile(
         r"(?:incompatíve[li]s?\s*(?:com)?|"
         r"evitar\s+contato\s+com|"
-        r"materiais?\s+a\s+evitar|"
+        r"materiais?\s+(?:a\s+)?evitar|"
         r"reage\s+(?:perigosamente\s+)?com|"
-        r"não\s+misturar\s+com)\s*[:\-]?\s*(.{5,300})",
+        r"incompatible\s+(?:with|materials)|"
+        r"não\s+(?:misturar|armazenar)\s+(?:com|junto))\s*[:\-]?\s*([^\n]{5,400})",
         re.IGNORECASE,
     ),
     "h_statements": re.compile(
@@ -115,10 +119,15 @@ EXTRACTION_FIELDS: Final[list[FieldDefinition]] = [
         section=1,
         pattern=PATTERNS["product_name"],
         prompt_template=(
-            "Extract the product name from this SDS section.\n"
-            "Return ONLY the product name, nothing else.\n"
-            "If not found, return 'NOT_FOUND'.\n\n"
-            "Text:\n{text}"
+              "Extract the PRIMARY CHEMICAL product name from this SDS section.\n"
+              "Look for: Product name, Chemical name, Trade name.\n"
+              "Return the MAIN chemical name, NOT brand names, codes, or catalog numbers.\n\n"
+              "Examples:\n"
+              "- 'Ácido Sulfúrico 98%' → 'Ácido Sulfúrico'\n"
+              "- 'ACME Brand H2SO4' → 'Ácido Sulfúrico'\n"
+              "- 'Ethanol 95%' → 'Ethanol'\n\n"
+              "Text:\n{text}\n\n"
+              "Return ONLY the chemical name. If not found, return 'NOT_FOUND'."
         ),
     ),
     FieldDefinition(
@@ -141,10 +150,12 @@ EXTRACTION_FIELDS: Final[list[FieldDefinition]] = [
         section=3,
         pattern=PATTERNS["cas_number"],
         prompt_template=(
-            "Extract the CAS number from this SDS section.\n"
-            "CAS numbers have format: XXXX-XX-X (2-7 digits, 2 digits, 1 digit).\n"
-            "Return ONLY the CAS number, nothing else.\n"
-            "If not found, return 'NOT_FOUND'.\n\n"
+                "Extract the CAS number (Chemical Abstracts Service number) from this SDS section.\n"
+                "CAS numbers have the format: XXXXX-XX-X (2-7 digits, dash, 2 digits, dash, 1 digit).\n\n"
+                "Examples: 7664-93-9 (Sulfuric acid), 64-17-5 (Ethanol), 67-56-1 (Methanol).\n\n"
+                "Return ONLY the CAS number in correct format (e.g., 1234-56-7).\n"
+                "If multiple CAS numbers exist, return the one for the PRIMARY component.\n"
+                "If not found, return 'NOT_FOUND'.\n\n"
             "Text:\n{text}"
         ),
     ),
@@ -228,9 +239,11 @@ EXTRACTION_FIELDS: Final[list[FieldDefinition]] = [
         pattern=PATTERNS["incompatibilities"],
         prompt_template=(
             "Extract the incompatible materials from this SDS section.\n"
-            "Look for materials that should NOT be mixed with this product.\n"
-            "Return a list of incompatible materials separated by commas.\n"
-            "If not found, return 'NOT_FOUND'.\n\n"
+                "Look for materials that should NOT be mixed or stored with this product.\n"
+                "Common keywords: incompatible, avoid contact with, materials to avoid, reacts with.\n\n"
+                "Return a comma-separated list of incompatible materials (e.g., 'strong acids, oxidizers, metals').\n"
+                "Be specific - use chemical names or classes, not vague terms.\n"
+                "If not found or states 'none known', return 'NOT_FOUND'.\n\n"
             "Text:\n{text}"
         ),
     ),

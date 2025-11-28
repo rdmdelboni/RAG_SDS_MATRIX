@@ -12,7 +12,7 @@ from tkinter import filedialog, messagebox
 
 import customtkinter as ctk
 
-from ..components import Table, TitleLabel
+from ..components import SimpleTable, TitleLabel
 
 
 class BackupTab(ctk.CTkFrame):
@@ -76,14 +76,15 @@ class BackupTab(ctk.CTkFrame):
         )
         status_label.pack(anchor="w", padx=20, pady=(20, 5))
 
-        self.status_table = Table(
+        self.status_table = SimpleTable(
             content_frame,
             headers=["Log"],
             rows=[("Aguardando backup...",)],
             fg_color=self.app.colors["input"],
             text_color=self.app.colors["text"],
+            header_color=self.app.colors["surface"],
             accent_color=self.app.colors["accent"],
-            height=260,
+            min_col_width=150,
         )
         self.status_table.pack(fill="both", expand=True, padx=20, pady=(0, 20))
 

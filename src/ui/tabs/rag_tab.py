@@ -10,7 +10,7 @@ from tkinter import filedialog, messagebox, simpledialog
 
 import customtkinter as ctk
 
-from ..components import Table, TitledFrame, TitleLabel
+from ..components import SimpleTable, TitledFrame, TitleLabel
 
 
 class RagTab(ctk.CTkFrame):
@@ -110,16 +110,17 @@ class RagTab(ctk.CTkFrame):
         ollama_ok = self.app.ollama.test_connection()
         rows.append(("Ollama", "Conectado" if ollama_ok else "Não conectado"))
 
-        self.rag_stats_table = Table(
+        self.rag_stats_table = SimpleTable(
             stats_frame,
             headers=["Métrica", "Valor"],
             rows=rows,
             fg_color=self.app.colors["input"],
             text_color=self.app.colors["text"],
+            header_color=self.app.colors["surface"],
             accent_color=self.app.colors["accent"],
-            height=120,
+            min_col_width=120,
         )
-        self.rag_stats_table.pack(fill="x", padx=10, pady=10)
+        self.rag_stats_table.pack(fill="x", padx=10, pady=10, expand=False)
 
     def _on_add_docs(self) -> None:
         """Handle add documents button."""

@@ -53,14 +53,22 @@ class Application(ctk.CTk):
         self.vector_store = get_vector_store()
         self.ingestion = KnowledgeIngestionService()
         t_rest = (time.time() - t2) * 1000
-        self.sds_file_rows: dict[str, str] = {}
+        # sds_file_rows: filename -> (status, chemical_name)
+        self.sds_file_rows: dict[str, tuple[str, str]] = {}
 
         # Fixar idioma da UI/relatórios em Português, independentemente do idioma do documento processado
         set_language(self.settings.ui.language or "pt")
 
         # Configure window (responsive)
         self.title(get_text("app.title"))
-        self._apply_responsive_geometry()
+        # Set fullscreen mode (maximized window)
+        try:
+            self.state("zoomed")  # Maximize on Windows
+        except Exception:
+            try:
+                self.attributes("-zoomed", 1)  # Alternative for Windows
+            except Exception:
+                pass  # On Linux/macOS, geometry will handle it
         self.minsize(self.settings.ui.min_width, self.settings.ui.min_height)
         self.configure(fg_color=self.colors["bg"])
 
@@ -114,6 +122,7 @@ class Application(ctk.CTk):
         self.tab_view.add(get_text("tab.sources"))
         self.tab_view.add(get_text("tab.sds"))
         self.tab_view.add("Records")
+        self.tab_view.add("Quality")
         self.tab_view.add("Backup")
         self.tab_view.add("Status")
         self.tab_view.add("Chat")
@@ -123,6 +132,7 @@ class Application(ctk.CTk):
         self._setup_sources_tab()
         self._setup_sds_tab()
         self._setup_records_tab()
+        self._setup_quality_tab()
         self._setup_backup_tab()
         self._setup_status_tab()
         self._setup_chat_tab()
@@ -234,7 +244,7 @@ class Application(ctk.CTk):
             pass
 
     def _setup_header_bar(self) -> None:
-        """Top header with app title and exit button."""
+        """Top header with app title and close button."""
         self.header_bar = ctk.CTkFrame(
             self.main_frame,
             fg_color=self.colors["header"],
@@ -251,18 +261,20 @@ class Application(ctk.CTk):
         )
         title_label.pack(side="left", padx=12, pady=6)
 
-        exit_btn = ctk.CTkButton(
+        # Close button (X) on the right
+        close_btn = ctk.CTkButton(
             self.header_bar,
-            text="Exit",
+            text="✕",
             command=self._on_close,
-            fg_color=self.colors.get("error", "#d9534f"),
-            hover_color=self.colors.get("button_hover", "#c9302c"),
-            text_color=self.colors["header"],
-            corner_radius=6,
-            font=self.button_font_sm,
-            width=90,
+            fg_color="transparent",
+            hover_color=self.colors.get("error", "#d9534f"),
+            text_color=self.colors["text"],
+            corner_radius=4,
+            font=("Segoe UI", 16, "bold"),
+            width=32,
+            height=32,
         )
-        exit_btn.pack(side="right", padx=12, pady=6)
+        close_btn.pack(side="right", padx=8, pady=4)
 
     def _apply_responsive_geometry(self) -> None:
         """Set window size based on screen size with sensible bounds."""
@@ -314,6 +326,13 @@ class Application(ctk.CTk):
         records_tab_frame = self.tab_view.tab("Records")
         self.records_tab = RecordsTab(records_tab_frame, app=self)
         self.records_tab.pack(fill="both", expand=True)
+
+    def _setup_quality_tab(self) -> None:
+        """Setup Quality Dashboard tab."""
+        from .tabs import QualityTab
+        quality_tab_frame = self.tab_view.tab("Quality")
+        self.quality_tab = QualityTab(quality_tab_frame, app=self)
+        self.quality_tab.pack(fill="both", expand=True)
 
     def _setup_backup_tab(self) -> None:
         """Setup Backup tab."""
@@ -748,14 +767,23 @@ class Application(ctk.CTk):
 
     def _reset_sds_file_table(self, sds_files: list[Path]) -> None:
         """Prepare the SDS file status table with pending state."""
-        self.sds_file_rows = {f.name: "Pending" for f in sds_files}
+        self.sds_file_rows = {f.name: ("Pending", "") for f in sds_files}
         self._render_sds_file_table()
 
-    def _set_sds_file_status(self, filename: str, status: str) -> None:
-        """Update a single file status in the SDS table."""
+    def _set_sds_file_status(self, filename: str, status: str, chemical_name: str = "") -> None:
+        """Update a single file status in the SDS table.
+
+        Args:
+            filename: Name of the file
+            status: Status string (Processing, Success, Failed, etc.)
+            chemical_name: Identified chemical name from the document
+        """
         if not hasattr(self, "sds_file_rows"):
             self.sds_file_rows = {}
-        self.sds_file_rows[filename] = status
+        # Keep existing chemical name if not provided
+        existing_name = self.sds_file_rows.get(filename, ("", ""))[1] if filename in self.sds_file_rows else ""
+        chemical_name = chemical_name or existing_name
+        self.sds_file_rows[filename] = (status, chemical_name)
         self._render_sds_file_table()
 
     def _render_sds_file_table(self) -> None:
@@ -766,12 +794,13 @@ class Application(ctk.CTk):
         try:
             if not self.sds_file_rows:
                 self.sds_files_table.set_data(
-                    ["Arquivo", "Status"], [("Nenhum arquivo", "")]
+                    ["Arquivo", "Composto Químico", "Status"],
+                    [("Nenhum arquivo", "", "")]
                 )
                 return
-            rows = [(name, status) for name, status in self.sds_file_rows.items()]
+            rows = [(name, chemical_name, status) for name, (status, chemical_name) in self.sds_file_rows.items()]
             self.sds_files_table.set_data(
-                ["Arquivo", "Status"], rows, accent_color=self.colors["accent"]
+                ["Arquivo", "Composto Químico", "Status"], rows, accent_color=self.colors["accent"]
             )
         except Exception as exc:  # pragma: no cover - UI best effort
             logger.debug("Failed to render SDS file table: %s", exc)
@@ -840,22 +869,28 @@ class Application(ctk.CTk):
                     # Process document
                     result = processor.process(file_path, use_rag=use_rag)
 
+                    # Extract chemical name from extractions
+                    chemical_name = ""
+                    if result.extractions and "product_name" in result.extractions:
+                        product_info = result.extractions.get("product_name", {})
+                        chemical_name = product_info.get("value", "") or product_info.get("normalized_value", "")
+
                     if result.status == "success":
                         successful += 1
                         if result.is_dangerous:
                             dangerous_count += 1
                         self.after(
                             0,
-                            lambda n=file_path.name: self._set_sds_file_status(
-                                n, "Success"
+                            lambda n=file_path.name, c=chemical_name: self._set_sds_file_status(
+                                n, "Success", c
                             ),
                         )
                     else:
                         failed += 1
                         self.after(
                             0,
-                            lambda n=file_path.name: self._set_sds_file_status(
-                                n, "Failed"
+                            lambda n=file_path.name, c=chemical_name: self._set_sds_file_status(
+                                n, "Failed", c
                             ),
                         )
 

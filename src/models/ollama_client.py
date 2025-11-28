@@ -64,13 +64,26 @@ class OllamaClient:
     timeout: int = field(default_factory=lambda: get_settings().ollama.timeout)
 
     _embeddings: OllamaEmbeddings | None = field(default=None, init=False)
+    _embeddings_initialized: bool = field(default=False, init=False)
 
     def __post_init__(self) -> None:
-        """Initialize embeddings model."""
-        self._embeddings = OllamaEmbeddings(
-            base_url=self.base_url,
-            model=self.embedding_model,
-        )
+        """Initialize embeddings model lazily to avoid blocking."""
+        # Don't initialize embeddings here - it's blocking
+        # Initialize lazily when first needed
+        pass
+
+    def _ensure_embeddings(self) -> None:
+        """Ensure embeddings model is initialized (lazy loading)."""
+        if not self._embeddings_initialized:
+            try:
+                self._embeddings = OllamaEmbeddings(
+                    base_url=self.base_url,
+                    model=self.embedding_model,
+                )
+                self._embeddings_initialized = True
+            except Exception as e:
+                logger.error("Failed to initialize embeddings model: %s", e)
+                self._embeddings_initialized = True  # Mark as attempted to avoid retrying
 
     # === Connection Testing ===
 
@@ -257,7 +270,10 @@ Document text:
             Embedding vector
         """
         try:
-            return self._embeddings.embed_query(text)
+            self._ensure_embeddings()
+            if self._embeddings:
+                return self._embeddings.embed_query(text)
+            return []
         except Exception as e:
             logger.error("Embedding failed: %s", e)
             return []
@@ -272,13 +288,17 @@ Document text:
             List of embedding vectors
         """
         try:
-            return self._embeddings.embed_documents(texts)
+            self._ensure_embeddings()
+            if self._embeddings:
+                return self._embeddings.embed_documents(texts)
+            return []
         except Exception as e:
             logger.error("Batch embedding failed: %s", e)
             return []
 
-    def get_embeddings(self) -> OllamaEmbeddings:
+    def get_embeddings(self) -> OllamaEmbeddings | None:
         """Get the embeddings model for LangChain integration."""
+        self._ensure_embeddings()
         return self._embeddings
 
     # === OCR ===

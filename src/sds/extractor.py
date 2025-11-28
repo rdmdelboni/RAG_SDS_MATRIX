@@ -8,6 +8,7 @@ from typing import Any
 
 
 from ..config.constants import SDS_SECTIONS
+from ..config.settings import get_settings
 from ..utils.logger import get_logger
 
 logger = get_logger(__name__)
@@ -16,11 +17,21 @@ logger = get_logger(__name__)
 class SDSExtractor:
     """Extract text and sections from SDS PDF documents."""
 
-    # Pattern to detect SDS section headers
-    SECTION_PATTERN = re.compile(
-        r"(?:SECÇÃO|SEÇÃO|SECTION|Seção)\s+(\d+)[:\s\-]+(.+?)(?=(?:SECÇÃO|SEÇÃO|SECTION|Seção)\s+\d+|$)",
-        re.IGNORECASE | re.DOTALL,
-    )
+    # Patterns to detect SDS section headers (multiple formats)
+    SECTION_PATTERNS = [
+        re.compile(
+            r"(?:^|\n)\s*(?:SEC[CÇ]ÃO|SEÇÃO|SECTION)\s+(\d+)\s*[:\-]?\s*([^\n]{5,120})",
+            re.IGNORECASE | re.MULTILINE,
+        ),
+        re.compile(
+            r"(?:^|\n)\s*(\d+)\s*[.:\-]\s+([A-ZÀÁÂÃÉÊÍÓÔÕÚÇ][^\n]{5,120})",
+            re.MULTILINE,
+        ),
+        re.compile(
+            r"(?:^|\n)\s*Seção\s+(\d+)\s*[:\-]?\s*([^\n]{5,120})",
+            re.IGNORECASE | re.MULTILINE,
+        ),
+    ]
 
     def extract_pdf(self, file_path: Path) -> dict[str, Any]:
         """Extract text and metadata from PDF.
@@ -36,35 +47,70 @@ class SDSExtractor:
         except ImportError:
             raise ImportError("pdfplumber required")
 
-        text_parts = []
+        text_parts: list[str] = []
+        raw_page_text: list[str] = []  # store original extraction before OCR fallback
         page_count = 0
+        blank_pages = 0
 
         try:
             with pdfplumber.open(file_path) as pdf:
                 page_count = len(pdf.pages)
 
                 for page_num, page in enumerate(pdf.pages, 1):
-                    # Try to extract text
-                    text = page.extract_text()
-                    if text:
-                        text_parts.append(f"\n--- Page {page_num} ---\n{text}")
-                    else:
-                        # Fallback to OCR if no text extracted
-                        logger.warning(
-                            "Page %d has no text, attempting OCR",
-                            page_num,
-                        )
-                        text = self._ocr_page(page)
-                        if text:
+                    text = page.extract_text() or ""
+                    raw_page_text.append(text)
+                    if not text.strip():
+                        blank_pages += 1
+                        # Try OCR immediately for empty page
+                        logger.debug("Page %d empty, triggering page OCR", page_num)
+                        ocr_text = self._ocr_page(page)
+                        if ocr_text.strip():
                             text_parts.append(
-                                f"\n--- Page {page_num} (OCR) ---\n{text}"
+                                f"\n--- Page {page_num} (OCR) ---\n{ocr_text}"
                             )
+                        else:
+                            text_parts.append(f"\n--- Page {page_num} ---\n")
+                    else:
+                        text_parts.append(f"\n--- Page {page_num} ---\n{text}")
 
         except Exception as e:
             logger.error("PDF extraction failed: %s", e)
             raise
 
         full_text = "\n".join(text_parts)
+
+        # === Global OCR Fallback Decision ===
+        try:
+            settings = get_settings()
+            if not settings.processing.ocr_fallback_enabled:
+                return {"text": full_text, "page_count": page_count, "sections": self._extract_sections(full_text)}
+
+            total_chars = sum(len(t) for t in raw_page_text)
+            avg_chars = total_chars / page_count if page_count else 0
+            blank_ratio = blank_pages / page_count if page_count else 0.0
+            # Configurable thresholds from settings
+            min_avg_chars = settings.processing.ocr_min_avg_chars_per_page
+            max_blank_ratio = settings.processing.ocr_max_blank_page_ratio
+
+            if (avg_chars < min_avg_chars or blank_ratio > max_blank_ratio) and page_count > 0:
+                logger.info(
+                    "Triggering full-document OCR fallback (avg_chars=%.1f blank_ratio=%.2f)",
+                    avg_chars,
+                    blank_ratio,
+                )
+                try:
+                    ocr_text = self._ocr_pdf_full(file_path)
+                    if ocr_text and len(ocr_text.strip()) > len(full_text.strip()) * 0.8:
+                        full_text = ocr_text
+                        logger.info(
+                            "Full OCR fallback used (length=%d, original=%d)",
+                            len(ocr_text),
+                            len("\n".join(text_parts)),
+                        )
+                except Exception as exc:  # pragma: no cover - best effort
+                    logger.warning("Full OCR fallback failed: %s", exc)
+        except Exception as exc:  # pragma: no cover
+            logger.debug("OCR fallback decision failed: %s", exc)
 
         return {
             "text": full_text,
@@ -87,9 +133,12 @@ class SDSExtractor:
 
             from ..models import get_ollama_client
 
-            img = page.to_image()
+            page_img = page.to_image(resolution=150)
+            pil_img = getattr(page_img, "original", None)
+            if pil_img is None:
+                return ""
             img_bytes = io.BytesIO()
-            img.save(img_bytes, format="PNG")
+            pil_img.save(img_bytes, format="PNG")
             img_bytes.seek(0)
 
             # Use Ollama OCR
@@ -103,8 +152,37 @@ class SDSExtractor:
             logger.warning("OCR failed: %s", e)
             return ""
 
+    def _ocr_pdf_full(self, file_path: Path) -> str:
+        """Perform OCR on all pages of a PDF (slow fallback)."""
+        try:
+            import pdfplumber
+            import io
+            from ..models import get_ollama_client
+
+            ollama = get_ollama_client()
+            parts: list[str] = []
+            with pdfplumber.open(file_path) as pdf:
+                for page_num, page in enumerate(pdf.pages, 1):
+                    try:
+                        page_img = page.to_image(resolution=150)
+                        pil_img = getattr(page_img, "original", None)
+                        if pil_img is None:
+                            continue
+                        buf = io.BytesIO()
+                        pil_img.save(buf, format="PNG")
+                        buf.seek(0)
+                        text = ollama.ocr_image_bytes(buf.read())
+                        parts.append(f"\n--- Page {page_num} (FULL OCR) ---\n{text}")
+                    except Exception as exc:  # pragma: no cover
+                        logger.debug("Full OCR page %d failed: %s", page_num, exc)
+                        continue
+            return "\n".join(parts)
+        except Exception as exc:  # pragma: no cover
+            logger.warning("Full PDF OCR failed: %s", exc)
+            return ""
+
     def _extract_sections(self, text: str) -> dict[int, str]:
-        """Extract SDS sections from text.
+        """Extract SDS sections from text with improved detection.
 
         Args:
             text: Full document text
@@ -113,58 +191,98 @@ class SDSExtractor:
             Dictionary mapping section numbers to section text
         """
         sections = {}
+        section_positions = []
 
-        # Try to find explicit section markers
-        matches = list(self.SECTION_PATTERN.finditer(text))
-
-        if matches:
-            # Explicit sections found
-            for idx, match in enumerate(matches):
+        # Try all patterns to find section headers
+        for pattern in self.SECTION_PATTERNS:
+            matches = pattern.finditer(text)
+            for match in matches:
                 try:
                     section_num = int(match.group(1))
-                    start = match.start()
-                    end = (
-                        matches[idx + 1].start()
-                        if idx + 1 < len(matches)
-                        else len(text)
-                    )
-                    sections[section_num] = text[start:end].strip()
+                    if 1 <= section_num <= 16:
+                        section_positions.append(
+                            (section_num, match.start(), match.end())
+                        )
                 except (ValueError, IndexError):
                     continue
-        else:
-            # Fallback: try to split by likely section content
-            # This is a simple heuristic for documents without explicit headers
-            lines = text.split("\n")
-            current_section = None
 
-            for line in lines:
-                # Look for patterns that indicate section start
-                if any(
-                    keyword in line.lower()
-                    for keyword in [
-                        "identification",
-                        "hazard",
-                        "composition",
-                        "first aid",
-                        "fire fighting",
-                        "accidental release",
-                        "handling and storage",
-                        "exposure control",
-                        "physical and chemical",
-                        "stability and reactivity",
-                        "toxicological",
-                        "ecological",
-                        "disposal",
-                        "transport information",
-                        "regulatory information",
-                    ]
-                ):
-                    current_section = line
-                    sections[len(sections) + 1] = line + "\n"
-                elif current_section and len(sections) > 0:
-                    sections[max(sections.keys())] += line + "\n"
+        # Sort by position and extract section text
+        if section_positions:
+            section_positions.sort(key=lambda x: x[1])
+
+            for idx, (section_num, start, end) in enumerate(section_positions):
+                # Find end boundary (next section or end of text)
+                next_start = (
+                    section_positions[idx + 1][1]
+                    if idx + 1 < len(section_positions)
+                    else len(text)
+                )
+
+                # Extract section content (skip header line)
+                section_text = text[end:next_start].strip()
+
+                # Only store if not duplicate and has content
+                if section_num not in sections and len(section_text) > 20:
+                    sections[section_num] = section_text
+
+        # Fallback: try to split by likely section content
+        if len(sections) < 5:  # Too few sections found
+            logger.debug("Few sections detected, using fallback heuristics")
+            sections = self._extract_sections_fallback(text)
 
         logger.info("Extracted %d SDS sections", len(sections))
+        return sections
+
+    def _extract_sections_fallback(self, text: str) -> dict[int, str]:
+        """Fallback section extraction using content heuristics.
+
+        Args:
+            text: Full document text
+
+        Returns:
+            Dictionary mapping section numbers to text
+        """
+        # Map keywords to likely section numbers
+        section_keywords = {
+            1: ["identification", "identificação", "produto"],
+            2: ["hazard", "perigo", "classificação"],
+            3: ["composition", "composição", "ingredientes"],
+            4: ["first aid", "primeiros", "socorros"],
+            5: ["fire fighting", "combate", "incêndio"],
+            10: ["stability", "estabilidade", "reatividade"],
+            14: ["transport", "transporte"],
+        }
+
+        sections = {}
+        lines = text.split("\n")
+        current_section = None
+        current_text = []
+
+        for line in lines:
+            line_lower = line.lower()
+
+            # Check if line indicates a section start
+            detected_section = None
+            for sec_num, keywords in section_keywords.items():
+                if any(kw in line_lower for kw in keywords):
+                    detected_section = sec_num
+                    break
+
+            if detected_section:
+                # Save previous section
+                if current_section and current_text:
+                    sections[current_section] = "\n".join(current_text).strip()
+
+                # Start new section
+                current_section = detected_section
+                current_text = [line]
+            elif current_section:
+                current_text.append(line)
+
+        # Save last section
+        if current_section and current_text:
+            sections[current_section] = "\n".join(current_text).strip()
+
         return sections
 
     def get_section_text(

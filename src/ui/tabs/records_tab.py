@@ -13,7 +13,7 @@ import customtkinter as ctk
 
 from scripts.rag_records import RAGRecordViewer
 
-from ..components import Table, TitleLabel
+from ..components import SimpleTable, TitleLabel
 
 
 class RecordsTab(ctk.CTkFrame):
@@ -119,14 +119,15 @@ class RecordsTab(ctk.CTkFrame):
         )
         results_label.pack(anchor="w", padx=20, pady=(10, 5))
 
-        self.results_table = Table(
+        self.results_table = SimpleTable(
             content_frame,
             headers=["Coluna 1", "Coluna 2", "Coluna 3"],
             rows=[("Aguardando consulta...", "", "")],
             fg_color=self.app.colors["input"],
             text_color=self.app.colors["text"],
+            header_color=self.app.colors["surface"],
             accent_color=self.app.colors["accent"],
-            height=320,
+            min_col_width=100,
         )
         self.results_table.pack(fill="both", expand=True, padx=20, pady=(0, 20))
 

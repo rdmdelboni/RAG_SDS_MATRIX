@@ -6,7 +6,7 @@ from __future__ import annotations
 
 import customtkinter as ctk
 
-from ..components import Table, TitledFrame, TitleLabel
+from ..components import SimpleTable, TitledFrame, TitleLabel
 
 
 class SdsTab(ctk.CTkFrame):
@@ -156,14 +156,15 @@ class SdsTab(ctk.CTkFrame):
         )
         files_frame.pack(fill="both", padx=20, pady=10, expand=True)
 
-        self.app.sds_files_table = Table(
+        self.app.sds_files_table = SimpleTable(
             files_frame,
-            headers=["Arquivo", "Status"],
-            rows=[("Nenhum arquivo selecionado.", "")],
+            headers=["Arquivo", "Composto Químico", "Status"],
+            rows=[("Nenhum arquivo selecionado.", "", "")],
             fg_color=self.app.colors["input"],
             text_color=self.app.colors["text"],
+            header_color=self.app.colors["surface"],
             accent_color=self.app.colors["accent"],
-            height=220,
+            min_col_width=100,
         )
         self.app.sds_files_table.pack(fill="both", expand=True, padx=10, pady=10)
 

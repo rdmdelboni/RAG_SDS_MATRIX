@@ -7,7 +7,7 @@ from __future__ import annotations
 
 import customtkinter as ctk
 
-from ..components import Table, TitledFrame, TitleLabel
+from ..components import SimpleTable, TitledFrame, TitleLabel
 
 
 class SourcesTab(ctk.CTkFrame):
@@ -171,14 +171,15 @@ class SourcesTab(ctk.CTkFrame):
         )
         list_frame.pack(fill="both", expand=True, padx=20, pady=10)
 
-        self.app.sources_table = Table(
+        self.app.sources_table = SimpleTable(
             list_frame,
             headers=["Data/Hora", "Título", "Tipo", "Chunks"],
             rows=[("Nenhum dado", "", "", "")],
             fg_color=self.app.colors["input"],
             text_color=self.app.colors["text"],
+            header_color=self.app.colors["surface"],
             accent_color=self.app.colors["accent"],
-            height=220,
+            min_col_width=100,
         )
         self.app.sources_table.pack(fill="both", expand=True, padx=10, pady=10)
 

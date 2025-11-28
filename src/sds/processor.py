@@ -11,7 +11,9 @@ from ..config.settings import get_settings
 from ..database import get_db_manager
 from ..rag import RAGRetriever
 from ..utils.logger import get_logger
+from .confidence_scorer import ConfidenceScorer, FieldSource
 from .extractor import SDSExtractor
+from .external_validator import ExternalValidator
 from .heuristics import HeuristicExtractor
 from .llm_extractor import LLMExtractor
 from .validator import FieldValidator, validate_extraction_result
@@ -46,6 +48,8 @@ class SDSProcessor:
         self.llm = LLMExtractor()
         self.validator = FieldValidator()
         self.rag = RAGRetriever()
+        self.external_validator = ExternalValidator()
+        self.confidence_scorer = ConfidenceScorer()
 
     def process(self, file_path: Path, use_rag: bool = True) -> ProcessingResult:
         """Process a single SDS document.
@@ -75,49 +79,22 @@ class SDSProcessor:
             raise
 
         try:
-            # === PHASE 1: LOCAL EXTRACTION ===
-            logger.debug("Phase 1: Local extraction starting")
+            # === PHASE 1: MULTI-PASS LOCAL EXTRACTION ===
+            logger.debug("Phase 1: Multi-pass local extraction starting")
 
             # Extract text and sections
             extracted = self.extractor.extract_document(file_path)
             text = extracted["text"]
             sections = extracted.get("sections", {})
 
-            # Run heuristics
-            heuristic_results = self.heuristics.extract_all_fields(text, sections)
+            # PASS 1: Heuristics (fast, high-precision fields)
+            extractions = self._extraction_pass_heuristics(text, sections)
 
-            # Refine with LLM if heuristics are uncertain
-            extractions = {}
-            for field_name, heur_result in heuristic_results.items():
-                if (
-                    heur_result["confidence"]
-                    < self.settings.processing.heuristic_confidence_threshold
-                ):
-                    refined = self.llm.refine_heuristic(field_name, heur_result, text)
-                    extractions[field_name] = refined
-                else:
-                    extractions[field_name] = heur_result
+            # PASS 2: LLM for uncertain/missing fields
+            extractions = self._extraction_pass_llm(extractions, text, sections)
 
-            # Also try LLM on missing fields
-            from ..config.constants import EXTRACTION_FIELDS
-
-            missing_fields = [
-                f.name
-                for f in EXTRACTION_FIELDS
-                if f.name not in extractions and f.required
-            ]
-
-            if missing_fields:
-                logger.debug(
-                    "Attempting LLM extraction for %d missing fields",
-                    len(missing_fields),
-                )
-                llm_results = self.llm.extract_multiple_fields(missing_fields, text)
-                extractions.update(llm_results)
-
-            # Validate all fields
-            for field_name, result in extractions.items():
-                extractions[field_name] = validate_extraction_result(field_name, result)
+            # PASS 3: Cross-field validation and normalization
+            extractions = self._validate_and_normalize_fields(extractions)
 
             # Calculate metrics
             completeness = self.validator.calculate_completeness(extractions)
@@ -140,8 +117,8 @@ class SDSProcessor:
                     source=result.get("source", "heuristic"),
                 )
 
-            # === PHASE 2: RAG ENRICHMENT (if needed) ===
-            if use_rag and is_dangerous:
+            # === PHASE 2: RAG FIELD COMPLETION (if needed) ===
+            if use_rag and (is_dangerous or completeness < 0.8):
                 kb_stats = {}
                 try:
                     kb_stats = self.rag.get_knowledge_base_stats()
@@ -168,8 +145,11 @@ class SDSProcessor:
                         pass
 
                 if doc_count > 0:
-                    logger.debug("Phase 2: RAG enrichment for dangerous chemical")
-                    extractions = self._enrich_with_rag(doc_id, extractions, text)
+                    logger.debug("Phase 2: RAG field completion (completeness: %.0f%%)", completeness * 100)
+                    extractions = self._rag_complete_missing_fields(doc_id, extractions, text)
+                    # Recalculate metrics after RAG enrichment
+                    completeness = self.validator.calculate_completeness(extractions)
+                    avg_confidence = self.validator.get_overall_confidence(extractions)
                 elif kb_stats and isinstance(kb_stats, dict) and kb_stats.get("error"):
                     logger.warning(
                         "Skipping RAG enrichment due to vector store error: %s",
@@ -227,13 +207,343 @@ class SDSProcessor:
                 error_message=str(e),
             )
 
+    def _extraction_pass_heuristics(
+        self, text: str, sections: dict[int, str]
+    ) -> dict[str, dict[str, Any]]:
+        """Pass 1: Fast heuristic extraction with regex patterns.
+
+        Args:
+            text: Full document text
+            sections: Extracted sections
+
+        Returns:
+            Dictionary of extracted fields
+        """
+        return self.heuristics.extract_all_fields(text, sections)
+
+    def _extraction_pass_llm(
+        self,
+        extractions: dict[str, dict[str, Any]],
+        text: str,
+        sections: dict[int, str],
+    ) -> dict[str, dict[str, Any]]:
+        """Pass 2: LLM extraction for uncertain or missing fields.
+
+        Args:
+            extractions: Results from heuristic pass
+            text: Full document text
+            sections: Extracted sections
+
+        Returns:
+            Updated extractions with LLM refinements
+        """
+        from ..config.constants import EXTRACTION_FIELDS
+
+        # Fields that need LLM help
+        uncertain_fields = [
+            name
+            for name, result in extractions.items()
+            if result["confidence"] < self.settings.processing.heuristic_confidence_threshold
+        ]
+
+        missing_fields = [
+            f.name
+            for f in EXTRACTION_FIELDS
+            if f.name not in extractions and f.required
+        ]
+
+        fields_for_llm = list(set(uncertain_fields + missing_fields))
+
+        if not fields_for_llm:
+            return extractions
+
+        logger.debug("LLM extracting %d fields", len(fields_for_llm))
+
+        # Refine uncertain fields
+        for field_name in uncertain_fields:
+            heur_result = extractions[field_name]
+            refined = self.llm.refine_heuristic(field_name, heur_result, text)
+            if refined["confidence"] > heur_result["confidence"]:
+                extractions[field_name] = refined
+
+        # Extract missing fields
+        if missing_fields:
+            llm_results = self.llm.extract_multiple_fields(missing_fields, text)
+            for field_name, result in llm_results.items():
+                if field_name not in extractions:
+                    extractions[field_name] = result
+
+        return extractions
+
+    def _validate_and_normalize_fields(
+        self, extractions: dict[str, dict[str, Any]]
+    ) -> dict[str, dict[str, Any]]:
+        """Pass 3: Validate and normalize extracted fields.
+
+        Args:
+            extractions: Raw extraction results
+
+        Returns:
+            Validated and normalized extractions
+        """
+        # Validate each field
+        for field_name, result in extractions.items():
+            extractions[field_name] = validate_extraction_result(field_name, result)
+
+        # Cross-field validation
+        extractions = self._cross_validate_fields(extractions)
+
+        # Product name normalization (non-destructive)
+        if "product_name" in extractions and "value" in extractions["product_name"]:
+            from .normalizer import normalize_product_name
+
+            original_val = extractions["product_name"].get("value", "")
+            normalized, changed = normalize_product_name(original_val)
+            if changed and normalized != original_val:
+                # Preserve original but add normalized_value field
+                extractions["product_name"]["normalized_value"] = normalized
+                # Slightly boost confidence if normalization yields cleaner canonical form
+                conf = extractions["product_name"].get("confidence", 0.0)
+                extractions["product_name"]["confidence"] = min(0.99, conf + 0.05)
+                extractions["product_name"].setdefault(
+                    "validation_message",
+                    "Normalized chemical name variant generated",
+                )
+        
+        # External validation and confidence scoring
+        extractions = self._apply_external_validation(extractions)
+        extractions = self._apply_confidence_scoring(extractions)
+
+        return extractions
+
+    def _cross_validate_fields(
+        self, extractions: dict[str, dict[str, Any]]
+    ) -> dict[str, dict[str, Any]]:
+        """Validate consistency between related fields.
+
+        Args:
+            extractions: Extracted fields
+
+        Returns:
+            Updated extractions with adjusted confidence
+        """
+        # UN number should match hazard class
+        un_num = extractions.get("un_number", {}).get("value")
+        hazard = extractions.get("hazard_class", {}).get("value")
+
+        if un_num and hazard and un_num != "NOT_FOUND" and hazard != "NOT_FOUND":
+            expected_class = self._lookup_un_hazard_class(un_num)
+            if expected_class and expected_class != hazard:
+                logger.warning(
+                    "UN %s expects class %s, found %s - adjusting confidence",
+                    un_num,
+                    expected_class,
+                    hazard,
+                )
+                # Lower confidence on hazard class
+                if "hazard_class" in extractions:
+                    extractions["hazard_class"]["confidence"] *= 0.7
+                # Suggest correction
+                extractions["hazard_class"]["validation_message"] = (
+                    f"Expected class {expected_class} for UN {un_num}"
+                )
+
+        # Product name should not be a code or ID
+        product = extractions.get("product_name", {}).get("value", "")
+        if product and len(product) < 5 and product.isupper():
+            logger.debug("Product name looks like a code: %s", product)
+            if "product_name" in extractions:
+                extractions["product_name"]["confidence"] *= 0.6
+                extractions["product_name"]["validation_message"] = "Might be a product code, not a name"
+
+        return extractions
+
+    def _lookup_un_hazard_class(self, un_number: str) -> str | None:
+        """Look up expected hazard class for UN number.
+
+        Args:
+            un_number: UN number (4 digits)
+
+        Returns:
+            Expected hazard class or None
+        """
+        # Common UN number mappings (partial list for validation)
+        un_hazard_map = {
+            "1170": "3",  # Ethanol
+            "1203": "3",  # Gasoline
+            "1230": "3",  # Methanol
+            "1263": "3",  # Paint
+            "1789": "8",  # Hydrochloric acid
+            "1791": "8",  # Hypochlorite solution
+            "1824": "8",  # Sodium hydroxide
+            "1830": "8",  # Sulfuric acid
+            "1866": "3",  # Resin solution
+            "2031": "8",  # Nitric acid
+            "2789": "8",  # Acetic acid
+        }
+
+        return un_hazard_map.get(un_number)
+
+    def _rag_complete_missing_fields(
+        self,
+        doc_id: int,
+        extractions: dict[str, dict[str, Any]],
+        text: str,
+    ) -> dict[str, dict[str, Any]]:
+        """Use RAG to complete missing or low-confidence fields.
+
+        Args:
+            doc_id: Document ID
+            extractions: Current extractions
+            text: Document text
+
+        Returns:
+            Updated extractions with RAG-enriched fields
+        """
+        try:
+            # Get chemical identifier
+            chemical_id = self._get_chemical_identifier(extractions)
+            if not chemical_id:
+                return extractions
+
+            # Query knowledge base
+            query = f"Chemical: {chemical_id}. Provide UN number, hazard class, incompatibilities, H-statements"
+            rag_docs = self.rag.retrieve(query, k=5)
+
+            if not rag_docs:
+                return extractions
+
+            # Combine RAG context
+            context = "\n\n".join([doc.content for doc in rag_docs[:3]])
+
+            # Complete missing/weak fields
+            fields_to_enrich = ["un_number", "hazard_class", "incompatibilities", "h_statements"]
+
+            for field_name in fields_to_enrich:
+                if self._should_enrich_field(field_name, extractions):
+                    enriched = self._extract_field_from_rag(field_name, chemical_id, context)
+                    if enriched:
+                        extractions[field_name] = validate_extraction_result(
+                            field_name,
+                            {
+                                "value": enriched,
+                                "confidence": 0.78,
+                                "source": "rag",
+                                "context": "Knowledge base enrichment",
+                            },
+                        )
+                        logger.debug("RAG enriched %s: %s", field_name, enriched)
+
+                        # Store enrichment
+                        self.db.store_extraction(
+                            document_id=doc_id,
+                            field_name=field_name,
+                            value=enriched,
+                            confidence=0.78,
+                            context="RAG knowledge base",
+                            validation_status="valid",
+                            source="rag",
+                        )
+
+        except Exception as e:
+            logger.warning("RAG field completion failed: %s", e)
+
+        return extractions
+
+    def _get_chemical_identifier(self, extractions: dict[str, dict[str, Any]]) -> str | None:
+        """Get best chemical identifier for RAG query.
+
+        Args:
+            extractions: Extracted fields
+
+        Returns:
+            Chemical identifier or None
+        """
+        # Priority: CAS > Product Name > UN Number
+        cas = extractions.get("cas_number", {}).get("value")
+        if cas and cas != "NOT_FOUND":
+            return f"CAS {cas}"
+
+        product = extractions.get("product_name", {}).get("value")
+        if product and product != "NOT_FOUND" and len(product) > 5:
+            return product
+
+        un = extractions.get("un_number", {}).get("value")
+        if un and un != "NOT_FOUND":
+            return f"UN {un}"
+
+        return None
+
+    def _should_enrich_field(
+        self, field_name: str, extractions: dict[str, dict[str, Any]]
+    ) -> bool:
+        """Check if field should be enriched with RAG.
+
+        Args:
+            field_name: Field to check
+            extractions: Current extractions
+
+        Returns:
+            True if field needs enrichment
+        """
+        if field_name not in extractions:
+            return True
+
+        result = extractions[field_name]
+        value = result.get("value", "")
+        confidence = result.get("confidence", 0.0)
+
+        # Enrich if missing, low confidence, or placeholder
+        return (
+            not value
+            or value == "NOT_FOUND"
+            or confidence < 0.70
+            or len(str(value).strip()) < 3
+        )
+
+    def _extract_field_from_rag(
+        self, field_name: str, chemical_id: str, context: str
+    ) -> str | None:
+        """Extract a specific field from RAG context.
+
+        Args:
+            field_name: Field to extract
+            chemical_id: Chemical identifier
+            context: RAG retrieved context
+
+        Returns:
+            Extracted value or None
+        """
+        # Field-specific prompts
+        prompts = {
+            "un_number": f"What is the UN number for {chemical_id}? Reply with only the 4-digit number or NOT_FOUND.",
+            "hazard_class": f"What is the hazard class for {chemical_id}? Reply with only the class number (e.g., 3, 8, 6.1) or NOT_FOUND.",
+            "incompatibilities": f"What materials is {chemical_id} incompatible with? List them separated by commas.",
+            "h_statements": f"What are the H-statements (hazard codes) for {chemical_id}? List them separated by commas (e.g., H301, H315).",
+        }
+
+        prompt = prompts.get(field_name)
+        if not prompt:
+            return None
+
+        full_prompt = f"{prompt}\n\nContext:\n{context[:2000]}\n\nAnswer:"
+
+        try:
+            answer = self.rag.ollama.chat(message=full_prompt, context=context[:2000])
+            if answer and "NOT_FOUND" not in answer.upper() and len(answer.strip()) > 2:
+                return answer.strip()
+        except Exception as e:
+            logger.debug("RAG extraction failed for %s: %s", field_name, e)
+
+        return None
+
     def _enrich_with_rag(
         self,
         doc_id: int,
         extractions: dict[str, dict[str, Any]],
         text: str,
     ) -> dict[str, dict[str, Any]]:
-        """Enrich extraction with RAG knowledge base.
+        """Legacy RAG enrichment method (kept for compatibility).
 
         Args:
             doc_id: Document ID
@@ -243,70 +553,155 @@ class SDSProcessor:
         Returns:
             Updated extractions
         """
-        try:
-            product_name = extractions.get("product_name", {}).get("value")
-            cas_number = extractions.get("cas_number", {}).get("value")
-            un_number = extractions.get("un_number", {}).get("value")
-
-            # Build search query
-            query_parts = []
-            if product_name and product_name != "NOT_FOUND":
-                query_parts.append(product_name)
-            if cas_number and cas_number != "NOT_FOUND":
-                query_parts.append(f"CAS {cas_number}")
-            if un_number and un_number != "NOT_FOUND":
-                query_parts.append(f"UN {un_number}")
-
-            if not query_parts:
-                return extractions
-
-            query = " ".join(query_parts)
-
-            # Search knowledge base
-            context = self.rag.vector_store.search_with_context(query, k=3)
-            if not context:
-                return extractions
-
-            # Use RAG context to refine incompatibilities
-            incomp_prompt = f"""Based on this context, what chemicals is {product_name} incompatible with?
-
-Context:
-{context}
-
-List incompatible materials separated by commas:"""
-
-            answer = self.rag.ollama.chat(
-                message=incomp_prompt,
-                context=context,
+        # Redirect to new implementation
+        return self._rag_complete_missing_fields(doc_id, extractions, text)
+    
+    def _apply_external_validation(
+        self, extractions: dict[str, dict[str, Any]]
+    ) -> dict[str, dict[str, Any]]:
+        """
+        Apply external validation (PubChem) to extracted fields.
+        
+        Args:
+            extractions: Current field extractions
+        
+        Returns:
+            Updated extractions with validation results
+        """
+        logger.debug("Applying external validation via PubChem")
+        
+        # Get key fields for validation
+        product_name = extractions.get("product_name", {}).get("value")
+        cas_number = extractions.get("cas_number", {}).get("value")
+        formula = extractions.get("formula", {}).get("value")
+        
+        # Validate product name
+        if product_name and product_name != "NOT_FOUND":
+            validation = self.external_validator.validate_product_name(
+                product_name, cas_number
             )
-
-            if answer and "NOT_FOUND" not in answer:
-                extractions["incompatibilities"] = validate_extraction_result(
-                    "incompatibilities",
-                    {
-                        "value": answer.strip(),
-                        "confidence": 0.75,
-                        "context": "RAG enrichment",
-                        "source": "rag",
-                    },
+            
+            extractions["product_name"]["external_validation"] = {
+                "source": validation.source,
+                "is_valid": validation.is_valid,
+                "confidence_boost": validation.confidence_boost,
+            }
+            
+            if validation.is_valid:
+                old_conf = extractions["product_name"].get("confidence", 0.0)
+                new_conf = min(0.99, old_conf + validation.confidence_boost)
+                extractions["product_name"]["confidence"] = new_conf
+                logger.debug(
+                    f"Product name validated (conf: {old_conf:.2f} → {new_conf:.2f})"
                 )
-
-                # Store RAG enrichment
-                self.db.store_extraction(
-                    document_id=doc_id,
-                    field_name="incompatibilities",
-                    value=answer.strip(),
-                    confidence=0.75,
-                    context="RAG enrichment",
-                    validation_status=extractions["incompatibilities"].get(
-                        "validation_status"
-                    ),
-                    source="rag",
+        
+        # Validate CAS number
+        if cas_number and cas_number != "NOT_FOUND":
+            validation = self.external_validator.validate_cas_number(cas_number)
+            
+            extractions["cas_number"]["external_validation"] = {
+                "source": validation.source,
+                "is_valid": validation.is_valid,
+                "confidence_boost": validation.confidence_boost,
+            }
+            
+            if validation.is_valid:
+                old_conf = extractions["cas_number"].get("confidence", 0.0)
+                new_conf = min(0.99, old_conf + validation.confidence_boost)
+                extractions["cas_number"]["confidence"] = new_conf
+                logger.debug(
+                    f"CAS number validated (conf: {old_conf:.2f} → {new_conf:.2f})"
                 )
-
-        except Exception as e:
-            logger.warning("RAG enrichment failed: %s", e)
-
+        
+        # Validate chemical formula
+        if formula and formula != "NOT_FOUND" and product_name:
+            validation = self.external_validator.validate_chemical_formula(
+                formula, product_name
+            )
+            
+            if "formula" not in extractions:
+                extractions["formula"] = {}
+            
+            extractions["formula"]["external_validation"] = {
+                "source": validation.source,
+                "is_valid": validation.is_valid,
+                "confidence_boost": validation.confidence_boost,
+            }
+            
+            if validation.is_valid:
+                old_conf = extractions.get("formula", {}).get("confidence", 0.0)
+                new_conf = min(0.99, old_conf + validation.confidence_boost)
+                extractions["formula"]["confidence"] = new_conf
+                logger.debug(
+                    f"Formula validated (conf: {old_conf:.2f} → {new_conf:.2f})"
+                )
+        
+        return extractions
+    
+    def _apply_confidence_scoring(
+        self, extractions: dict[str, dict[str, Any]]
+    ) -> dict[str, dict[str, Any]]:
+        """
+        Apply comprehensive confidence scoring model to all fields.
+        
+        Args:
+            extractions: Current field extractions
+        
+        Returns:
+            Updated extractions with confidence scores and quality tiers
+        """
+        logger.debug("Applying confidence scoring model")
+        
+        field_scores = {}
+        
+        for field_name, field_data in extractions.items():
+            if "value" not in field_data:
+                continue
+            
+            # Determine extraction source
+            source = FieldSource.HEURISTIC  # Default
+            if field_data.get("method") == "llm":
+                source = FieldSource.LLM
+            elif field_data.get("method") == "rag":
+                source = FieldSource.RAG
+            elif field_data.get("normalized_value"):
+                source = FieldSource.NORMALIZED
+            
+            # Get validation results
+            validation_result = field_data.get("external_validation")
+            cross_validated = field_data.get("cross_validated", False)
+            
+            # Score the field
+            score_result = self.confidence_scorer.score_field(
+                field_name=field_name,
+                value=field_data["value"],
+                source=source,
+                base_confidence=field_data.get("confidence", 0.70),
+                validation_result=validation_result if validation_result and validation_result.get("is_valid") else None,
+                cross_validation_passed=cross_validated,
+                pattern_match_strength=field_data.get("pattern_strength", 0.80),
+                context_indicators=field_data.get("context", []),
+            )
+            
+            # Update field with scoring results
+            extractions[field_name]["confidence_score"] = score_result
+            extractions[field_name]["quality_tier"] = score_result["quality_tier"]
+            extractions[field_name]["passes_threshold"] = score_result["passes_threshold"]
+            
+            field_scores[field_name] = score_result
+        
+        # Calculate document-level confidence
+        doc_confidence = self.confidence_scorer.aggregate_document_confidence(field_scores)
+        
+        # Store document-level metrics (for later retrieval if needed)
+        extractions["_document_confidence"] = doc_confidence
+        
+        logger.info(
+            f"Document confidence: {doc_confidence['overall_confidence']:.2f} "
+            f"({doc_confidence['quality_tier']}) - "
+            f"{doc_confidence['fields_above_threshold']}/{doc_confidence['total_fields']} fields pass"
+        )
+        
         return extractions
 
     def process_batch(
