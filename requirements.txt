@@ -1,0 +1,51 @@
+# RAG_SDS_MATRIX - Dependencies
+# Python 3.11+
+
+# === Core LLM & RAG ===
+langchain>=0.3.0
+langchain-community>=0.3.0
+langchain-chroma>=0.2.0
+langchain-ollama>=0.3.0
+langchain-text-splitters>=0.3.0
+chromadb>=1.0.0
+ollama>=0.4.0
+
+# === Document Processing ===
+pdfplumber>=0.10.0
+pdf2image>=1.16.0
+pytesseract>=0.3.10
+python-docx>=1.1.0
+beautifulsoup4>=4.12.0
+lxml>=5.2.0
+markdown>=3.5.0
+chardet>=5.2.0
+
+# === Database ===
+duckdb>=1.2.0
+
+# === Data Processing ===
+pandas>=2.2.0
+openpyxl>=3.1.0
+Pillow>=11.0.0
+
+# === Web & HTTP ===
+httpx>=0.27.0
+requests>=2.32.0
+aiofiles>=23.2.0
+
+# === UI ===
+customtkinter>=5.2.0
+tkinter-tooltip>=2.1.0
+
+# === Validation & Config ===
+pydantic>=2.10.0
+python-dotenv>=1.0.0
+
+# === Utilities ===
+tqdm>=4.66.0
+rich>=14.0.0
+
+# === Testing ===
+pytest>=7.4.0
+pytest-cov>=4.1.0
+pytest-mock>=3.12.0

@@ -1,0 +1,59 @@
+# Python / virtualenv
+venv/
+.venv/
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+*.so
+*.egg
+*.egg-info/
+dist/
+build/
+
+# Environment configuration (CRITICAL - protects API keys)
+.env
+.env.local
+*.env.local
+.env.*.local
+
+# Local data/output
+data/
+input/
+output/
+logs/
+*.log
+
+# Database files (may contain sensitive data)
+*.db
+*.sqlite
+*.sqlite3
+
+# IDE / tooling
+.idea/
+.vscode/
+.vscode-test/
+.ruff_cache/
+.mypy_cache/
+.pytest_cache/
+.coverage
+.tox/
+*.cover
+
+# OS files
+.DS_Store
+Thumbs.db
+*~
+
+# Temporary files
+*.tmp
+*.bak
+*.swp
+*.swo
+
+# Jupyter Notebook
+.ipynb_checkpoints
+
+# Claude / AI assistant
+.claude/
