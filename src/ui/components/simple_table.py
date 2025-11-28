@@ -232,8 +232,8 @@ class SimpleTable(ctk.CTkFrame):
             )
             resize_handle.pack(side="right", fill="y", padx=0)
             resize_handle.bind("<Button-1>", lambda e, idx=i: self._start_resize(idx, e))
-            resize_handle.bind("<B1-Motion>", self._on_resize_motion)
-            resize_handle.bind("<ButtonRelease-1>", self._end_resize)
+            resize_handle.bind("<B1-Motion>", lambda e: self._on_resize_motion(e))
+            resize_handle.bind("<ButtonRelease-1>", lambda e: self._end_resize(e))
 
     def _create_data_row(self, row: list[str]) -> None:
         """Create a data row."""
@@ -297,10 +297,17 @@ class SimpleTable(ctk.CTkFrame):
     def _on_resize_motion(self, event) -> None:
         """Handle column resize motion - update width without full redraw."""
         try:
-            if not (self._resizing and self._resize_column_idx is not None):
+            # Only proceed if we're actively resizing
+            if not self._resizing or self._resize_column_idx is None or self._resize_start_x is None:
                 return
 
+            # Prevent resize updates that are too rapid
             delta = event.x_root - self._resize_start_x
+
+            # Only update if delta is significant (at least 2 pixels)
+            if abs(delta) < 2:
+                return
+
             new_width = max(
                 self.min_col_width,
                 self._resize_start_width + delta
