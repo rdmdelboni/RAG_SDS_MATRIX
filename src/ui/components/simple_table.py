@@ -296,7 +296,10 @@ class SimpleTable(ctk.CTkFrame):
 
     def _on_resize_motion(self, event) -> None:
         """Handle column resize motion - update width without full redraw."""
-        if self._resizing and self._resize_column_idx is not None:
+        try:
+            if not (self._resizing and self._resize_column_idx is not None):
+                return
+
             delta = event.x_root - self._resize_start_x
             new_width = max(
                 self.min_col_width,
@@ -309,28 +312,39 @@ class SimpleTable(ctk.CTkFrame):
 
             # Update header column frame
             if hasattr(self, 'header_frame') and self.header_frame.winfo_exists():
-                header_children = self.header_frame.winfo_children()
-                if self._resize_column_idx < len(header_children):
-                    col_frame = header_children[self._resize_column_idx]
-                    col_frame.configure(width=new_width)
-                    # Update header label wraplength
-                    for child in col_frame.winfo_children():
-                        if isinstance(child, Label) and child != self.header_frame:
-                            child.configure(wraplength=new_wraplength)
+                try:
+                    header_children = self.header_frame.winfo_children()
+                    if self._resize_column_idx < len(header_children):
+                        col_frame = header_children[self._resize_column_idx]
+                        if col_frame.winfo_exists():
+                            col_frame.configure(width=new_width)
+                            # Update header label wraplength
+                            for child in col_frame.winfo_children():
+                                if isinstance(child, Label) and child.winfo_exists():
+                                    child.configure(wraplength=new_wraplength)
+                except Exception:
+                    pass
 
             # Update all data row column frames for this column
-            for row_idx, row_frame in enumerate([
-                w for w in self.table_frame.winfo_children()
-                if w != self.header_frame
-            ]):
-                row_children = row_frame.winfo_children()
-                if self._resize_column_idx < len(row_children):
-                    col_frame = row_children[self._resize_column_idx]
-                    col_frame.configure(width=new_width)
-                    # Update cell label wraplength dynamically
-                    for child in col_frame.winfo_children():
-                        if isinstance(child, Label):
-                            child.configure(wraplength=new_wraplength)
+            if hasattr(self, 'table_frame') and self.table_frame.winfo_exists():
+                try:
+                    for row_frame in [
+                        w for w in self.table_frame.winfo_children()
+                        if w != self.header_frame and w.winfo_exists()
+                    ]:
+                        row_children = row_frame.winfo_children()
+                        if self._resize_column_idx < len(row_children):
+                            col_frame = row_children[self._resize_column_idx]
+                            if col_frame.winfo_exists():
+                                col_frame.configure(width=new_width)
+                                # Update cell label wraplength dynamically
+                                for child in col_frame.winfo_children():
+                                    if isinstance(child, Label) and child.winfo_exists():
+                                        child.configure(wraplength=new_wraplength)
+                except Exception:
+                    pass
+        except Exception:
+            pass
 
     def _end_resize(self, event) -> None:
         """End column resize operation."""
