@@ -61,12 +61,8 @@ class Application(ctk.CTk):
 
         # Configure window (responsive)
         self.title(get_text("app.title"))
-        # Set window to maximize after initialization
         self.minsize(self.settings.ui.min_width, self.settings.ui.min_height)
         self.configure(fg_color=self.colors["bg"])
-
-        # Schedule window maximization after initialization completes
-        self.after(100, self._maximize_window)
 
         # Configure CustomTkinter
         ctk.set_appearance_mode("dark" if self.settings.ui.theme == "dark" else "light")
@@ -85,29 +81,6 @@ class Application(ctk.CTk):
             t_rest,
         )
         logger.info("Application initialized")
-
-    def _maximize_window(self) -> None:
-        """Maximize window after initialization to ensure proper interaction."""
-        try:
-            # For Windows - use the most compatible maximization method
-            self.state("normal")
-            self.update()
-            # Get screen dimensions
-            screen_width = self.winfo_screenwidth()
-            screen_height = self.winfo_screenheight()
-            # Set window to fill screen with margins for taskbar (~40px bottom)
-            # Using slightly smaller values to prevent oversizing
-            window_width = max(screen_width - 20, 800)
-            window_height = max(screen_height - 60, 600)
-            # Position: slightly inset from edges
-            self.geometry(f"{window_width}x{window_height}+10+10")
-        except Exception:
-            try:
-                # Alternative: use state normal with explicit size
-                self.state("normal")
-                self.geometry("1200x800")
-            except Exception:
-                pass  # Silently fail if maximization doesn't work
 
     def _setup_ui(self) -> None:
         """Setup main UI components."""
