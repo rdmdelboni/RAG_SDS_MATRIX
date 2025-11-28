@@ -94,19 +94,19 @@ class Application(ctk.CTk):
             screen_width = self.winfo_screenwidth()
             screen_height = self.winfo_screenheight()
 
-            # Set reasonable default window size (80% of screen or min size)
-            default_width = int(screen_width * 0.8)
-            default_height = int(screen_height * 0.8)
-
-            # Ensure window is at least the minimum size
-            window_width = max(default_width, self.settings.ui.min_width)
-            window_height = max(default_height, self.settings.ui.min_height)
+            # Use configured window size from settings
+            window_width = self.settings.ui.window_width
+            window_height = self.settings.ui.window_height
 
             # Calculate position for centering
             x = (screen_width - window_width) // 2
             y = (screen_height - window_height) // 2
 
-            # Set the window geometry to centered position with proper size
+            # Ensure position is not negative (in case window is larger than screen)
+            x = max(0, x)
+            y = max(0, y)
+
+            # Set the window geometry to centered position with configured size
             self.geometry(f"{window_width}x{window_height}+{x}+{y}")
         except Exception:
             pass  # Silently fail if centering doesn't work
