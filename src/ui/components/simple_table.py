@@ -231,11 +231,12 @@ class SimpleTable(ctk.CTkFrame):
                 cursor="sb_h_double_arrow",
             )
             resize_handle.pack(side="right", fill="y", padx=0)
-            resize_handle.bind("<Button-1>", lambda e, idx=i: self._start_resize(idx, e))
+            # Store reference for double-click detection
+            resize_handle.click_count = 0
+            resize_handle.column_idx = i
+            resize_handle.bind("<Button-1>", self._on_handle_click)
             resize_handle.bind("<B1-Motion>", lambda e: self._on_resize_motion(e))
             resize_handle.bind("<ButtonRelease-1>", lambda e: self._end_resize(e))
-            # Double-click to auto-expand column to fit content
-            resize_handle.bind("<Double-Button-1>", lambda e, idx=i: self._auto_expand_column(idx))
 
     def _create_data_row(self, row: list[str]) -> None:
         """Create a data row."""
@@ -288,6 +289,36 @@ class SimpleTable(ctk.CTkFrame):
 
             # Store reference to cell label for dynamic updates during resize
             self._cell_labels[(current_row_num, i)] = cell_label
+
+    def _on_handle_click(self, event) -> None:
+        """Handle click on resize handle - detect double-click for auto-expand."""
+        handle = event.widget
+        col_idx = handle.column_idx
+
+        # Increment click count
+        handle.click_count += 1
+
+        if handle.click_count == 1:
+            # First click - schedule check for double-click
+            # Cancel any previous timer
+            if hasattr(handle, '_click_timer'):
+                try:
+                    self.after_cancel(handle._click_timer)
+                except Exception:
+                    pass
+
+            # Set timer to detect if this is a single or double click
+            def check_click():
+                if handle.click_count >= 2:
+                    # Double-click detected
+                    self._auto_expand_column(col_idx)
+                    handle.click_count = 0
+                else:
+                    # Single click - start resize
+                    self._start_resize(col_idx, event)
+                    handle.click_count = 0
+
+            handle._click_timer = self.after(250, check_click)
 
     def _start_resize(self, col_idx: int, event) -> None:
         """Start column resize operation."""
