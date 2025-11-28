@@ -74,6 +74,9 @@ class Application(ctk.CTk):
         # Center window on screen after setup completes
         self.after(100, self._center_window)
 
+        # Prevent maximized state - restore to normal if user tries to maximize
+        self.bind("<Configure>", self._on_window_configure)
+
         # Close handler
         self.protocol("WM_DELETE_WINDOW", self._on_close)
 
@@ -110,6 +113,20 @@ class Application(ctk.CTk):
             self.geometry(f"{window_width}x{window_height}+{x}+{y}")
         except Exception:
             pass  # Silently fail if centering doesn't work
+
+    def _on_window_configure(self, event=None) -> None:
+        """Handle window configuration changes - prevent maximized state."""
+        try:
+            # Get current window state
+            state = self.state()
+
+            # If window is maximized, restore to normal size
+            if state == "zoomed":
+                self.state("normal")
+                # Re-center the window to configured size
+                self.after(50, self._center_window)
+        except Exception:
+            pass
 
     def _setup_ui(self) -> None:
         """Setup main UI components."""
