@@ -89,18 +89,23 @@ class Application(ctk.CTk):
     def _maximize_window(self) -> None:
         """Maximize window after initialization to ensure proper interaction."""
         try:
-            # For Windows - maximize window (better than zoomed for interaction)
+            # For Windows - use the most compatible maximization method
             self.state("normal")
             self.update()
             # Get screen dimensions
             screen_width = self.winfo_screenwidth()
             screen_height = self.winfo_screenheight()
-            # Set window geometry to screen size with small margins
-            self.geometry(f"{screen_width - 10}x{screen_height - 50}+5+25")
+            # Set window to fill screen with margins for taskbar (~40px bottom)
+            # Using slightly smaller values to prevent oversizing
+            window_width = max(screen_width - 20, 800)
+            window_height = max(screen_height - 60, 600)
+            # Position: slightly inset from edges
+            self.geometry(f"{window_width}x{window_height}+10+10")
         except Exception:
             try:
-                # Alternative: use state zoomed if geometry fails
-                self.state("zoomed")
+                # Alternative: use state normal with explicit size
+                self.state("normal")
+                self.geometry("1200x800")
             except Exception:
                 pass  # Silently fail if maximization doesn't work
 
