@@ -71,6 +71,9 @@ class Application(ctk.CTk):
         # Setup UI
         self._setup_ui()
 
+        # Center window on screen after setup completes
+        self.after(100, self._center_window)
+
         # Close handler
         self.protocol("WM_DELETE_WINDOW", self._on_close)
 
@@ -81,6 +84,28 @@ class Application(ctk.CTk):
             t_rest,
         )
         logger.info("Application initialized")
+
+    def _center_window(self) -> None:
+        """Center the window on the screen both horizontally and vertically."""
+        try:
+            self.update_idletasks()
+
+            # Get window dimensions
+            window_width = self.winfo_width()
+            window_height = self.winfo_height()
+
+            # Get screen dimensions
+            screen_width = self.winfo_screenwidth()
+            screen_height = self.winfo_screenheight()
+
+            # Calculate position for centering
+            x = (screen_width - window_width) // 2
+            y = (screen_height - window_height) // 2
+
+            # Set the window geometry to centered position
+            self.geometry(f"{window_width}x{window_height}+{x}+{y}")
+        except Exception:
+            pass  # Silently fail if centering doesn't work
 
     def _setup_ui(self) -> None:
         """Setup main UI components."""
