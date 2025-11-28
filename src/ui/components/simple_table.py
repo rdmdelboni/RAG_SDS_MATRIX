@@ -234,6 +234,8 @@ class SimpleTable(ctk.CTkFrame):
             resize_handle.bind("<Button-1>", lambda e, idx=i: self._start_resize(idx, e))
             resize_handle.bind("<B1-Motion>", lambda e: self._on_resize_motion(e))
             resize_handle.bind("<ButtonRelease-1>", lambda e: self._end_resize(e))
+            # Double-click to auto-expand column to fit content
+            resize_handle.bind("<Double-Button-1>", lambda e, idx=i: self._auto_expand_column(idx))
 
     def _create_data_row(self, row: list[str]) -> None:
         """Create a data row."""
@@ -359,3 +361,70 @@ class SimpleTable(ctk.CTkFrame):
         self._resize_column_idx = None
         self._resize_start_x = None
         self._resize_start_width = None
+
+    def _auto_expand_column(self, col_idx: int) -> None:
+        """Auto-expand column to fit maximum content size."""
+        try:
+            if col_idx >= len(self.headers):
+                return
+
+            # Find maximum width needed for this column
+            max_width = 0
+
+            # Check header width
+            header = self.headers[col_idx]
+            header_width = len(header) * 8 + 24  # 8px per char + padding
+
+            # Check all data rows for maximum content width
+            max_content_width = header_width
+            for row in self.rows:
+                if col_idx < len(row):
+                    cell_text = str(row[col_idx])
+                    # Account for text length: 7px per char + padding
+                    cell_width = len(cell_text) * 7 + 24
+                    if cell_width > max_content_width:
+                        max_content_width = cell_width
+
+            # Cap at reasonable maximum (80% of screen width)
+            screen_width = self.winfo_screenwidth()
+            max_allowed_width = int(screen_width * 0.8)
+            new_width = min(max_content_width, max_allowed_width)
+            new_width = max(new_width, self.min_col_width)
+
+            # Update column width
+            self.col_widths[col_idx] = new_width
+            new_wraplength = max(new_width - 24, 20)
+
+            # Update header column frame
+            if hasattr(self, 'header_frame') and self.header_frame.winfo_exists():
+                try:
+                    header_children = self.header_frame.winfo_children()
+                    if col_idx < len(header_children):
+                        col_frame = header_children[col_idx]
+                        if col_frame.winfo_exists():
+                            col_frame.configure(width=new_width)
+                            for child in col_frame.winfo_children():
+                                if isinstance(child, Label) and child.winfo_exists():
+                                    child.configure(wraplength=new_wraplength)
+                except Exception:
+                    pass
+
+            # Update all data row column frames
+            if hasattr(self, 'table_frame') and self.table_frame.winfo_exists():
+                try:
+                    for row_frame in [
+                        w for w in self.table_frame.winfo_children()
+                        if w != self.header_frame and w.winfo_exists()
+                    ]:
+                        row_children = row_frame.winfo_children()
+                        if col_idx < len(row_children):
+                            col_frame = row_children[col_idx]
+                            if col_frame.winfo_exists():
+                                col_frame.configure(width=new_width)
+                                for child in col_frame.winfo_children():
+                                    if isinstance(child, Label) and child.winfo_exists():
+                                        child.configure(wraplength=new_wraplength)
+                except Exception:
+                    pass
+        except Exception:
+            pass
