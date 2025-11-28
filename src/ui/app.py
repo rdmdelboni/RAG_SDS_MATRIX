@@ -61,16 +61,12 @@ class Application(ctk.CTk):
 
         # Configure window (responsive)
         self.title(get_text("app.title"))
-        # Set fullscreen mode (maximized window)
-        try:
-            self.state("zoomed")  # Maximize on Windows
-        except Exception:
-            try:
-                self.attributes("-zoomed", 1)  # Alternative for Windows
-            except Exception:
-                pass  # On Linux/macOS, geometry will handle it
+        # Set window to maximize after initialization
         self.minsize(self.settings.ui.min_width, self.settings.ui.min_height)
         self.configure(fg_color=self.colors["bg"])
+
+        # Schedule window maximization after initialization completes
+        self.after(100, self._maximize_window)
 
         # Configure CustomTkinter
         ctk.set_appearance_mode("dark" if self.settings.ui.theme == "dark" else "light")
@@ -89,6 +85,24 @@ class Application(ctk.CTk):
             t_rest,
         )
         logger.info("Application initialized")
+
+    def _maximize_window(self) -> None:
+        """Maximize window after initialization to ensure proper interaction."""
+        try:
+            # For Windows - maximize window (better than zoomed for interaction)
+            self.state("normal")
+            self.update()
+            # Get screen dimensions
+            screen_width = self.winfo_screenwidth()
+            screen_height = self.winfo_screenheight()
+            # Set window geometry to screen size with small margins
+            self.geometry(f"{screen_width - 10}x{screen_height - 50}+5+25")
+        except Exception:
+            try:
+                # Alternative: use state zoomed if geometry fails
+                self.state("zoomed")
+            except Exception:
+                pass  # Silently fail if maximization doesn't work
 
     def _setup_ui(self) -> None:
         """Setup main UI components."""
