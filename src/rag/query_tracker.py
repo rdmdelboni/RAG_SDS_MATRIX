@@ -242,7 +242,7 @@ class QueryTracker:
         try:
             with self.db._lock:
                 result = self.db.conn.execute(
-                    f"""
+                    """
                     SELECT
                         COUNT(*) as total_queries,
                         AVG(total_time) as avg_query_time,
@@ -253,8 +253,9 @@ class QueryTracker:
                         AVG(result_count) as avg_result_count,
                         COUNT(CASE WHEN result_count > 0 THEN 1 END) as queries_with_results
                     FROM query_logs
-                    WHERE query_timestamp > CURRENT_TIMESTAMP - INTERVAL {days} DAY
-                    """
+                    WHERE query_timestamp > CURRENT_TIMESTAMP - INTERVAL ? DAY
+                    """,
+                    [days],
                 ).fetchall()
 
                 if result:
@@ -288,15 +289,16 @@ class QueryTracker:
         try:
             with self.db._lock:
                 result = self.db.conn.execute(
-                    f"""
+                    """
                     SELECT
                         COUNT(*) as total_feedback,
                         COUNT(CASE WHEN feedback_rating = 'relevant' THEN 1 END) as relevant,
                         COUNT(CASE WHEN feedback_rating = 'partially_relevant' THEN 1 END) as partially_relevant,
                         COUNT(CASE WHEN feedback_rating = 'irrelevant' THEN 1 END) as irrelevant
                     FROM query_feedback
-                    WHERE feedback_timestamp > CURRENT_TIMESTAMP - INTERVAL {days} DAY
-                    """
+                    WHERE feedback_timestamp > CURRENT_TIMESTAMP - INTERVAL ? DAY
+                    """,
+                    [days],
                 ).fetchall()
 
                 if result:

@@ -22,6 +22,7 @@ from ..rag.vector_store import get_vector_store
 from ..utils.logger import get_logger
 from .tabs import BackupTab, ChatTab, RagTab, RecordsTab, SdsTab, SourcesTab, StatusTab
 from .theme import get_colors
+from .window_manager import create_window_manager
 
 logger = get_logger(__name__)
 
@@ -71,10 +72,10 @@ class Application(ctk.CTk):
         # Setup UI
         self._setup_ui()
 
-        # Center window on screen after setup completes
-        self.after(100, self._center_window)
+        # Initialize window manager for sizing, positioning, and state management
+        self.window_manager = create_window_manager(self, self.settings)
 
-        # Prevent maximized state - restore to normal if user tries to maximize
+        # Prevent maximized state and handle window events
         self.bind("<Configure>", self._on_window_configure)
 
         # Close handler
@@ -88,45 +89,13 @@ class Application(ctk.CTk):
         )
         logger.info("Application initialized")
 
-    def _center_window(self) -> None:
-        """Center the window on the screen both horizontally and vertically."""
-        try:
-            self.update_idletasks()
-
-            # Get screen dimensions
-            screen_width = self.winfo_screenwidth()
-            screen_height = self.winfo_screenheight()
-
-            # Use configured window size from settings
-            window_width = self.settings.ui.window_width
-            window_height = self.settings.ui.window_height
-
-            # Calculate position for centering
-            x = (screen_width - window_width) // 2
-            y = (screen_height - window_height) // 2
-
-            # Ensure position is not negative (in case window is larger than screen)
-            x = max(0, x)
-            y = max(0, y)
-
-            # Set the window geometry to centered position with configured size
-            self.geometry(f"{window_width}x{window_height}+{x}+{y}")
-        except Exception:
-            pass  # Silently fail if centering doesn't work
-
     def _on_window_configure(self, event=None) -> None:
-        """Handle window configuration changes - prevent maximized state."""
-        try:
-            # Get current window state
-            state = self.state()
+        """Handle window configuration changes - prevent maximized state.
 
-            # If window is maximized, restore to normal size
-            if state == "zoomed":
-                self.state("normal")
-                # Re-center the window to configured size
-                self.after(50, self._center_window)
-        except Exception:
-            pass
+        Delegates to window manager for proper handling.
+        """
+        if hasattr(self, "window_manager"):
+            self.window_manager.handle_window_configure(event)
 
     def _setup_ui(self) -> None:
         """Setup main UI components."""
@@ -1466,9 +1435,12 @@ class Application(ctk.CTk):
         self.status_text.configure(text=f"Language: {new_lang.upper()}")
 
     def _on_close(self) -> None:
-        """Handle window close."""
+        """Handle window close - save window state before exiting."""
         logger.info("Application closing")
-        self.destroy()
+        if hasattr(self, "window_manager"):
+            self.window_manager.handle_window_close()
+        else:
+            self.destroy()
 
 
 def run_app() -> None:
