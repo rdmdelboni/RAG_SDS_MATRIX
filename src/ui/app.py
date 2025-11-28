@@ -1424,6 +1424,7 @@ class Application(ctk.CTk):
                     (
                         ts_str,
                         title,
+                        doc.get("chemical_name") or "",
                         doc.get("source_type"),
                         doc.get("chunk_count", 0),
                     )
@@ -1431,9 +1432,9 @@ class Application(ctk.CTk):
 
             if hasattr(self, "sources_table"):
                 if not rows:
-                    rows = [("Nenhum dado", "", "", "")]
+                    rows = [("Nenhum dado", "", "", "", "")]
                 self.sources_table.set_data(
-                    ["Data/Hora", "Título", "Tipo", "Chunks"],
+                    ["Data/Hora", "Título", "Nome Químico", "Tipo", "Chunks"],
                     rows,
                     accent_color=self.colors["accent"],
                 )

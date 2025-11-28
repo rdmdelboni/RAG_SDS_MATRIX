@@ -173,8 +173,8 @@ class SourcesTab(ctk.CTkFrame):
 
         self.app.sources_table = SimpleTable(
             list_frame,
-            headers=["Data/Hora", "Título", "Tipo", "Chunks"],
-            rows=[("Nenhum dado", "", "", "")],
+            headers=["Data/Hora", "Título", "Nome Químico", "Tipo", "Chunks"],
+            rows=[("Nenhum dado", "", "", "", "")],
             fg_color=self.app.colors["input"],
             text_color=self.app.colors["text"],
             header_color=self.app.colors["surface"],

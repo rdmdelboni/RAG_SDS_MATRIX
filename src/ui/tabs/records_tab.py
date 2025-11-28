@@ -196,24 +196,26 @@ class RecordsTab(ctk.CTkFrame):
                     for r in records
                 ]
             elif query_type == "cameo":
-                headers = ["ID", "Título", "URL", "Chunks"]
+                headers = ["ID", "Título", "Nome Químico", "URL", "Chunks"]
                 records = viewer.get_cameo_chemicals(limit=limit_int)
                 rows = [
                     (
                         r.get("id"),
                         r.get("title"),
+                        r.get("chemical_name") or "",
                         r.get("url") or "",
                         r.get("chunk_count"),
                     )
                     for r in records
                 ]
             elif query_type == "files":
-                headers = ["ID", "Título", "Caminho", "Chunks"]
+                headers = ["ID", "Título", "Nome Químico", "Caminho", "Chunks"]
                 records = viewer.get_file_documents(limit=limit_int)
                 rows = [
                     (
                         r.get("id"),
                         r.get("title"),
+                        r.get("chemical_name") or "",
                         r.get("path") or "",
                         r.get("chunk_count"),
                     )
