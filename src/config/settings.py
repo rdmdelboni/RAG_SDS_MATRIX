@@ -121,10 +121,10 @@ class UIConfig:
 
     language: str = field(default_factory=lambda: os.getenv("UI_LANGUAGE", "pt"))
     theme: str = field(default_factory=lambda: os.getenv("UI_THEME", "dark"))
-    window_width: int = 1600
-    window_height: int = 900
-    min_width: int = 1200
-    min_height: int = 700
+    window_width: int = 900
+    window_height: int = 600
+    min_width: int = 900
+    min_height: int = 600
     # UI scaling
     # Modes: "auto" (default), "compact", "comfortable", "large"
     scale_mode: str = field(
