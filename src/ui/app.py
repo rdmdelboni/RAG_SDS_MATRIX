@@ -20,7 +20,7 @@ from ..rag.document_loader import DocumentLoader
 from ..rag.ingestion_service import IngestionSummary, KnowledgeIngestionService
 from ..rag.vector_store import get_vector_store
 from ..utils.logger import get_logger
-from .tabs import BackupTab, ChatTab, RagTab, RecordsTab, SdsTab, SourcesTab, StatusTab
+from .tabs import BackupTab, ChatTab, RagTab, RecordsTab, ReviewTab, SdsTab, SourcesTab, StatusTab
 from .theme import get_colors
 from .window_manager import create_window_manager
 
@@ -75,8 +75,8 @@ class Application(ctk.CTk):
         # Initialize window manager for sizing, positioning, and state management
         self.window_manager = create_window_manager(self, self.settings)
 
-        # Prevent maximized state and handle window events
-        self.bind("<Configure>", self._on_window_configure)
+        # Prevent maximized state and handle window events (disabled auto-resize per user request)
+        # self.bind("<Configure>", self._on_window_configure)
 
         # Close handler
         self.protocol("WM_DELETE_WINDOW", self._on_close)
@@ -90,12 +90,24 @@ class Application(ctk.CTk):
         logger.info("Application initialized")
 
     def _on_window_configure(self, event=None) -> None:
-        """Handle window configuration changes - prevent maximized state.
+        """Disabled: originally handled window configuration events.
 
-        Delegates to window manager for proper handling.
+        Left as no-op to satisfy existing references without resizing the window.
         """
-        if hasattr(self, "window_manager"):
-            self.window_manager.handle_window_configure(event)
+        return
+
+    def _center_window(self) -> None:
+        """Center the window using configured dimensions without further resizing."""
+        try:
+            screen_w = self.winfo_screenwidth()
+            screen_h = self.winfo_screenheight()
+            target_w = int(self.settings.ui.window_width)
+            target_h = int(self.settings.ui.window_height)
+            x = max(0, (screen_w - target_w) // 2)
+            y = max(0, (screen_h - target_h) // 2)
+            self.geometry(f"{target_w}x{target_h}+{x}+{y}")
+        except Exception:
+            pass
 
     def _setup_ui(self) -> None:
         """Setup main UI components."""
@@ -129,16 +141,21 @@ class Application(ctk.CTk):
         self.tab_view.add(get_text("tab.sources"))
         self.tab_view.add(get_text("tab.sds"))
         self.tab_view.add("Records")
+        self.tab_view.add("Review")
         self.tab_view.add("Quality")
         self.tab_view.add("Backup")
         self.tab_view.add("Status")
         self.tab_view.add("Chat")
 
+
+        # Center window once after UI is built
+        self.after(50, self._center_window)
         # Setup tab contents (placeholders for now)
         self._setup_rag_tab()
         self._setup_sources_tab()
         self._setup_sds_tab()
         self._setup_records_tab()
+        self._setup_review_tab()
         self._setup_quality_tab()
         self._setup_backup_tab()
         self._setup_status_tab()
@@ -152,7 +169,8 @@ class Application(ctk.CTk):
         # Bind resize to adapt scaling for screen/window ratio
         self._last_size = (self.winfo_width(), self.winfo_height())
         self._last_scale_update = time.time()
-        self.bind("<Configure>", self._on_window_resize)
+        # Disable automatic window resizing behavior
+        # self.bind("<Configure>", self._on_window_resize)
 
     def _check_tab_change(self) -> None:
         """Poll for tab selection changes and refresh SDS banner when needed."""
@@ -212,6 +230,11 @@ class Application(ctk.CTk):
             # Apply global scaling
             ctk.set_widget_scaling(scale)
             ctk.set_window_scaling(scale)
+            try:
+                # Ensure native Tk dialogs (file pickers, message boxes) follow the same scaling
+                self.tk.call("tk", "scaling", scale)
+            except Exception:
+                pass
 
             # Update commonly used font sizes for new widgets created afterwards
             def _sz(base: int) -> int:
@@ -284,24 +307,18 @@ class Application(ctk.CTk):
         close_btn.pack(side="right", padx=8, pady=4)
 
     def _apply_responsive_geometry(self) -> None:
-        """Set window size based on screen size with sensible bounds."""
+        """Center window on screen with fixed size."""
         try:
             screen_w = self.winfo_screenwidth()
             screen_h = self.winfo_screenheight()
 
-            cfg_w = int(self.settings.ui.window_width or 0)
-            cfg_h = int(self.settings.ui.window_height or 0)
+            # Use configured size (no automatic sizing)
+            target_w = int(self.settings.ui.window_width)
+            target_h = int(self.settings.ui.window_height)
 
-            # Target ~85% of screen if not explicitly configured
-            target_w = cfg_w or int(screen_w * 0.85)
-            target_h = cfg_h or int(screen_h * 0.85)
-
-            # Clamp to min/max
-            target_w = max(self.settings.ui.min_width, min(target_w, screen_w - 80))
-            target_h = max(self.settings.ui.min_height, min(target_h, screen_h - 120))
-
+            # Center on screen
             x = max(0, (screen_w - target_w) // 2)
-            y = max(0, (screen_h - target_h) // 3)  # a bit higher than center
+            y = max(0, (screen_h - target_h) // 2)
 
             self.geometry(f"{target_w}x{target_h}+{x}+{y}")
         except Exception:
@@ -333,6 +350,12 @@ class Application(ctk.CTk):
         records_tab_frame = self.tab_view.tab("Records")
         self.records_tab = RecordsTab(records_tab_frame, app=self)
         self.records_tab.pack(fill="both", expand=True)
+
+    def _setup_review_tab(self) -> None:
+        """Setup Review tab."""
+        review_tab_frame = self.tab_view.tab("Review")
+        self.review_tab = ReviewTab(review_tab_frame, app=self)
+        self.review_tab.pack(fill="both", expand=True)
 
     def _setup_quality_tab(self) -> None:
         """Setup Quality Dashboard tab."""
@@ -419,6 +442,7 @@ class Application(ctk.CTk):
         """Prompt user for files and ingest them into the knowledge base."""
         files = filedialog.askopenfilenames(
             title="Select knowledge files",
+            parent=self,
             filetypes=[
                 (
                     "Supported files",
@@ -434,7 +458,9 @@ class Application(ctk.CTk):
 
     def _on_ingest_local_folder(self) -> None:
         """Ingest all supported files from a folder."""
-        folder = filedialog.askdirectory(title="Select folder with knowledge files")
+        folder = filedialog.askdirectory(
+            title="Select folder with knowledge files", parent=self
+        )
         if not folder:
             return
 
@@ -460,6 +486,7 @@ class Application(ctk.CTk):
         """Ingest a Bright Data snapshot file."""
         file_path = filedialog.askopenfilename(
             title="Select Bright Data snapshot",
+            parent=self,
             filetypes=[("Snapshot files", "*.json *.txt"), ("All files", "*.*")],
         )
         if file_path:
@@ -715,7 +742,7 @@ class Application(ctk.CTk):
 
     def _on_select_folder(self) -> None:
         """Handle select folder button."""
-        folder = filedialog.askdirectory(title="Select SDS folder")
+        folder = filedialog.askdirectory(title="Select SDS folder", parent=self)
         if folder:
             logger.info("Selected folder: %s", folder)
             self.selected_sds_folder = folder
@@ -1018,7 +1045,7 @@ class Application(ctk.CTk):
 
     def _on_export(self) -> None:
         """Handle export button."""
-        folder = filedialog.askdirectory(title="Select export location")
+        folder = filedialog.askdirectory(title="Select export location", parent=self)
         if folder:
             logger.info("Exporting to: %s", folder)
             self.status_text.configure(text=f"Exporting to: {folder}")
@@ -1317,24 +1344,25 @@ class Application(ctk.CTk):
         btn_frame = ctk.CTkFrame(results_window, fg_color="transparent")
         btn_frame.pack(fill="x", padx=10, pady=10)
 
-        ctk.CTkButton(
+        from .components.app_button import AppButton
+        AppButton(
             btn_frame,
-            corner_radius=4,
             text="Close",
+            command=results_window.destroy,
             fg_color=self.colors["primary"],
             text_color=self.colors["header"],
-            font=self.button_font,
-            command=results_window.destroy,
+            hover_color=self.colors["button_hover"],
+            width=160,
         ).pack(side="left", padx=5)
 
-        ctk.CTkButton(
+        AppButton(
             btn_frame,
-            corner_radius=4,
             text="Export Results",
+            command=lambda: self._on_export(),
             fg_color=self.colors["accent"],
             text_color=self.colors["header"],
-            font=self.button_font,
-            command=lambda: self._on_export(),
+            hover_color=self.colors["button_hover"],
+            width=180,
         ).pack(side="left", padx=5)
 
     def _format_dataframe_for_display(self, df) -> str:

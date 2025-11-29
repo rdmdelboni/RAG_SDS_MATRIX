@@ -78,18 +78,18 @@ class RAGRecordViewer:
         """Search chemical incompatibilities."""
         try:
             where_clauses = []
+            params: list[str | int] = []
             if cas_a:
-                where_clauses.append(f"cas_a = '{cas_a}'")
+                where_clauses.append("r.cas_a = ?")
+                params.append(cas_a)
             if cas_b:
-                where_clauses.append(f"cas_b = '{cas_b}'")
+                where_clauses.append("r.cas_b = ?")
+                params.append(cas_b)
             if rule:
-                where_clauses.append(f"rule = '{rule.upper()}'")
+                where_clauses.append("r.rule = ?")
+                params.append(rule.upper())
 
-            where_sql = ""
-            if where_clauses:
-                where_sql = "WHERE " + " AND ".join(where_clauses)
-
-            query = f"""
+            query = """
                 SELECT 
                     r.cas_a,
                     h1.metadata AS meta_a,
@@ -101,15 +101,18 @@ class RAGRecordViewer:
                     r.group_a,
                     r.group_b,
                     r.metadata
-                FROM rag_incompatibilities
-                r
+                FROM rag_incompatibilities r
                 LEFT JOIN rag_hazards h1 ON h1.cas = r.cas_a
                 LEFT JOIN rag_hazards h2 ON h2.cas = r.cas_b
-                {where_sql}
-                LIMIT {limit}
             """
 
-            results = self.conn.execute(query).fetchall()
+            if where_clauses:
+                query += "\nWHERE " + " AND ".join(where_clauses)
+
+            query += "\nLIMIT ?"
+            params.append(limit)
+
+            results = self.conn.execute(query, params).fetchall()
 
             records = []
             for row in results:
@@ -163,16 +166,15 @@ class RAGRecordViewer:
         """Search chemical hazards."""
         try:
             where_clauses = []
+            params: list[str | int] = []
             if cas:
-                where_clauses.append(f"cas = '{cas}'")
+                where_clauses.append("cas = ?")
+                params.append(cas)
             if source:
-                where_clauses.append(f"source = '{source}'")
+                where_clauses.append("source = ?")
+                params.append(source)
 
-            where_sql = ""
-            if where_clauses:
-                where_sql = "WHERE " + " AND ".join(where_clauses)
-
-            query = f"""
+            query = """
                 SELECT 
                     cas,
                     hazard_flags,
@@ -183,11 +185,15 @@ class RAGRecordViewer:
                     source,
                     metadata
                 FROM rag_hazards
-                {where_sql}
-                LIMIT {limit}
             """
 
-            results = self.conn.execute(query).fetchall()
+            if where_clauses:
+                query += "\nWHERE " + " AND ".join(where_clauses)
+
+            query += "\nLIMIT ?"
+            params.append(limit)
+
+            results = self.conn.execute(query, params).fetchall()
 
             records = []
             for row in results:

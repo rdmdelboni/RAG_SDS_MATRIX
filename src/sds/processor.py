@@ -16,6 +16,7 @@ from .extractor import SDSExtractor
 from .external_validator import ExternalValidator
 from .heuristics import HeuristicExtractor
 from .llm_extractor import LLMExtractor
+from .pubchem_enrichment import PubChemEnricher
 from .validator import FieldValidator, validate_extraction_result
 
 logger = get_logger(__name__)
@@ -49,6 +50,7 @@ class SDSProcessor:
         self.validator = FieldValidator()
         self.rag = RAGRetriever()
         self.external_validator = ExternalValidator()
+        self.pubchem_enricher = PubChemEnricher()
         self.confidence_scorer = ConfidenceScorer()
 
     def process(self, file_path: Path, use_rag: bool = True) -> ProcessingResult:
@@ -117,7 +119,60 @@ class SDSProcessor:
                     source=result.get("source", "heuristic"),
                 )
 
-            # === PHASE 2: RAG FIELD COMPLETION (if needed) ===
+            # === PHASE 2: PUBCHEM ENRICHMENT ===
+            logger.debug("Phase 2: PubChem enrichment and validation")
+            pubchem_enrichments = self.pubchem_enricher.enrich_extraction(
+                extractions,
+                aggressive=False  # Conservative by default
+            )
+            
+            # Apply enrichments to extractions
+            if pubchem_enrichments:
+                logger.info(f"Applied {len(pubchem_enrichments)} PubChem enrichments")
+                enrichment_report = self.pubchem_enricher.generate_enrichment_report(pubchem_enrichments)
+                logger.debug(f"\n{enrichment_report}")
+                
+                # Update extractions with enriched data
+                for field_name, enrichment in pubchem_enrichments.items():
+                    if enrichment.enriched_value and enrichment.validation_status == "enriched":
+                        # Add enriched field or update existing
+                        if field_name not in extractions:
+                            extractions[field_name] = {
+                                "value": enrichment.enriched_value,
+                                "confidence": enrichment.confidence,
+                                "source": "pubchem_enrichment",
+                                "context": "Enriched from PubChem API",
+                                "validation_status": "valid"
+                            }
+                        elif enrichment.confidence > extractions[field_name].get("confidence", 0):
+                            # Boost confidence for validated fields
+                            extractions[field_name]["confidence"] = min(
+                                extractions[field_name]["confidence"] + 0.10,
+                                0.95
+                            )
+                            extractions[field_name]["pubchem_validated"] = True
+                    
+                    elif enrichment.validation_status == "warning":
+                        # Flag warnings in the extraction
+                        if field_name in extractions:
+                            extractions[field_name]["validation_status"] = "warning"
+                            extractions[field_name]["pubchem_issues"] = enrichment.issues
+                
+                # Store enrichment metadata
+                for field_name, enrichment in pubchem_enrichments.items():
+                    if enrichment.enriched_value:
+                        self.db.store_extraction(
+                            document_id=doc_id,
+                            field_name=field_name,
+                            value=enrichment.enriched_value,
+                            confidence=enrichment.confidence,
+                            context="PubChem enrichment",
+                            validation_status=enrichment.validation_status,
+                            validation_message="; ".join(enrichment.issues) if enrichment.issues else None,
+                            source="pubchem",
+                        )
+
+            # === PHASE 3: RAG FIELD COMPLETION (if needed) ===
             if use_rag and (is_dangerous or completeness < 0.8):
                 kb_stats = {}
                 try:

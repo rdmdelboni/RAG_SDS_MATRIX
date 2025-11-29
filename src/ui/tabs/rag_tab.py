@@ -126,6 +126,7 @@ class RagTab(ctk.CTkFrame):
         """Handle add documents button."""
         files = filedialog.askopenfilenames(
             title="Select documents for RAG",
+            parent=self,
             filetypes=[
                 ("PDF files", "*.pdf"),
                 ("Text files", "*.txt"),

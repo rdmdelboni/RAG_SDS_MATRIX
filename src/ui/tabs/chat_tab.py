@@ -12,6 +12,7 @@ import customtkinter as ctk
 
 from ...utils.preferences import load_preferences, save_preferences
 from ..components import TitledFrame, TitleLabel
+from ..components.app_button import AppButton
 
 
 class ChatTab(ctk.CTkFrame):
@@ -46,7 +47,7 @@ class ChatTab(ctk.CTkFrame):
             placeholder_text="Ex.: Responda sempre em português e seja conciso.",
             fg_color=self.app.colors["input"],
             text_color=self.app.colors["text"],
-            font=("JetBrains Mono", 11),
+            font=("JetBrains Mono", 13),
         )
         self.system_entry.pack(fill="x", padx=10, pady=8)
 
@@ -61,7 +62,7 @@ class ChatTab(ctk.CTkFrame):
             height=120,
             fg_color=self.app.colors["input"],
             text_color=self.app.colors["text"],
-            font=("JetBrains Mono", 11),
+            font=("JetBrains Mono", 13),
         )
         self.prefs_box.pack(fill="x", padx=10, pady=(8, 4))
         self._render_preferences()
@@ -69,24 +70,24 @@ class ChatTab(ctk.CTkFrame):
         prefs_btn_frame = ctk.CTkFrame(prefs_frame, fg_color="transparent")
         prefs_btn_frame.pack(fill="x", padx=10, pady=(0, 6))
 
-        ctk.CTkButton(
+        AppButton(
             prefs_btn_frame,
-            corner_radius=4,
             text="Salvar preferências",
+            command=self._on_save_prefs,
             fg_color=self.app.colors["primary"],
             text_color=self.app.colors["header"],
-            font=self.app.button_font_sm,
-            command=self._on_save_prefs,
+            hover_color=self.app.colors["button_hover"],
+            width=160,
         ).pack(side="left", padx=4)
 
-        ctk.CTkButton(
+        AppButton(
             prefs_btn_frame,
-            corner_radius=4,
             text="Recarregar",
+            command=self._render_preferences,
             fg_color=self.app.colors["surface"],
             text_color=self.app.colors["text"],
-            font=self.app.button_font_sm,
-            command=self._render_preferences,
+            hover_color=self.app.colors["button_hover"],
+            width=140,
         ).pack(side="left", padx=4)
 
         # Chat history
@@ -99,7 +100,7 @@ class ChatTab(ctk.CTkFrame):
             history_frame,
             fg_color=self.app.colors["input"],
             text_color=self.app.colors["text"],
-            font=("JetBrains Mono", 11),
+            font=("JetBrains Mono", 13),
             wrap="word",
         )
         self.history_box.pack(fill="both", expand=True, padx=10, pady=8)
@@ -117,7 +118,7 @@ class ChatTab(ctk.CTkFrame):
             height=120,
             fg_color=self.app.colors["input"],
             text_color=self.app.colors["text"],
-            font=("JetBrains Mono", 11),
+            font=("JetBrains Mono", 13),
         )
         self.message_box.pack(fill="x", padx=10, pady=(10, 6))
         # Key bindings: Shift+Enter nova linha, Ctrl+Enter envia
@@ -127,25 +128,25 @@ class ChatTab(ctk.CTkFrame):
         btn_frame = ctk.CTkFrame(input_frame, fg_color="transparent")
         btn_frame.pack(fill="x", padx=10, pady=(0, 8))
 
-        send_btn = ctk.CTkButton(
+        send_btn = AppButton(
             btn_frame,
-            corner_radius=4,
             text="Enviar",
+            command=self._on_send,
             fg_color=self.app.colors["primary"],
             text_color=self.app.colors["header"],
-            font=self.app.button_font,
-            command=self._on_send,
+            hover_color=self.app.colors["button_hover"],
+            width=160,
         )
         send_btn.pack(side="left", padx=5)
 
-        clear_btn = ctk.CTkButton(
+        clear_btn = AppButton(
             btn_frame,
-            corner_radius=4,
             text="Limpar",
+            command=self._clear_input,
             fg_color=self.app.colors["surface"],
             text_color=self.app.colors["text"],
-            font=self.app.button_font_sm,
-            command=self._clear_input,
+            hover_color=self.app.colors["button_hover"],
+            width=140,
         )
         clear_btn.pack(side="left", padx=5)
 

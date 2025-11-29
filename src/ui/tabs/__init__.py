@@ -5,6 +5,7 @@ from .chat_tab import ChatTab
 from .quality_tab import QualityTab
 from .rag_tab import RagTab
 from .records_tab import RecordsTab
+from .review_tab import ReviewTab
 from .sds_tab import SdsTab
 from .sources_tab import SourcesTab
 from .status_tab import StatusTab
@@ -15,6 +16,7 @@ __all__ = [
     "SdsTab",
     "StatusTab",
     "RecordsTab",
+    "ReviewTab",
     "BackupTab",
     "ChatTab",
     "QualityTab",

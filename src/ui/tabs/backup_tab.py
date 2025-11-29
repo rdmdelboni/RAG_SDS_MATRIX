@@ -90,7 +90,9 @@ class BackupTab(ctk.CTkFrame):
 
     def _on_backup_rag(self) -> None:
         """Handle RAG backup."""
-        output_folder = filedialog.askdirectory(title="Select Backup Location")
+        output_folder = filedialog.askdirectory(
+            title="Select Backup Location", parent=self
+        )
         if not output_folder:
             return
 

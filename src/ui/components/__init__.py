@@ -5,5 +5,6 @@ from .advanced_table import AdvancedTable
 from .simple_table import SimpleTable
 from .title_label import TitleLabel
 from .titled_frame import TitledFrame
+from .editable_table import EditableTable
 
-__all__ = ["TitleLabel", "TitledFrame", "Table", "AdvancedTable", "SimpleTable"]
+__all__ = ["TitleLabel", "TitledFrame", "Table", "AdvancedTable", "SimpleTable", "EditableTable"]

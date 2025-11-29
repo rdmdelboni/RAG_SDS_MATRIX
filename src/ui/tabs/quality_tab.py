@@ -8,7 +8,7 @@ import customtkinter as ctk
 from tkinter import messagebox
 from typing import Any, Dict, List
 
-from ..components import SimpleTable, TitledFrame, TitleLabel
+from ..components import EditableTable, TitledFrame, TitleLabel
 
 
 class QualityTab(ctk.CTkFrame):
@@ -134,13 +134,15 @@ class QualityTab(ctk.CTkFrame):
         )
         issues_frame.pack(fill="both", expand=True, pady=(0, 15))
 
-        self.issues_table = SimpleTable(
+        self.issues_table = EditableTable(
             issues_frame,
             fg_color=self.app.colors["input"],
             text_color=self.app.colors["text"],
             header_color=self.app.colors["surface"],
             accent_color=self.app.colors["accent"],
+            selected_color=self.app.colors.get("surface", "#334155"),
             min_col_width=100,
+            editable=False,
         )
         self.issues_table.pack(fill="both", expand=True, padx=10, pady=10)
 
@@ -435,6 +437,7 @@ class QualityTab(ctk.CTkFrame):
 
         filepath = filedialog.asksaveasfilename(
             title="Export Quality Report",
+            parent=self,
             defaultextension=".json",
             filetypes=[
                 ("JSON files", "*.json"),

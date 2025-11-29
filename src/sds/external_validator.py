@@ -31,7 +31,12 @@ class RateLimiter:
         self.max_per_second = max_per_second
         self.min_interval = 1.0 / max_per_second
         self._last_request = 0.0
-        self._lock = asyncio.Lock() if asyncio.get_event_loop().is_running() else None
+        # Avoid creating a loop in worker threads; only initialize lock if a loop exists
+        try:
+            asyncio.get_running_loop()
+            self._lock = asyncio.Lock()
+        except RuntimeError:
+            self._lock = None
     
     async def acquire_async(self):
         """Async rate limiting."""
@@ -542,4 +547,3 @@ class ExternalValidator:
             )
             for result in batch_results
         ]
-

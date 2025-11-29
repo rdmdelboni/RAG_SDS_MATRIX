@@ -13,7 +13,8 @@ import customtkinter as ctk
 
 from scripts.rag_records import RAGRecordViewer
 
-from ..components import SimpleTable, TitleLabel
+from ..components import EditableTable, TitleLabel
+from ..components.app_button import AppButton
 
 
 class RecordsTab(ctk.CTkFrame):
@@ -88,26 +89,25 @@ class RecordsTab(ctk.CTkFrame):
         )
         limit_entry.pack(side="left", padx=5)
 
-        ctk.CTkButton(
+        AppButton(
             limit_frame,
-            corner_radius=4,
             text="Query Database",
             command=self._on_query,
             fg_color=self.app.colors["accent"],
             text_color=self.app.colors["header"],
-            font=self.app.button_font,
+            hover_color=self.app.colors["button_hover"],
+            width=180,
         ).pack(side="left", padx=20)
 
         # Copy results helper
-        ctk.CTkButton(
+        AppButton(
             limit_frame,
-            corner_radius=4,
             text="Copy Output",
             command=self._copy_results,
             fg_color=self.app.colors["surface"],
             text_color=self.app.colors["text"],
-            font=self.app.button_font_sm,
-            width=120,
+            hover_color=self.app.colors["button_hover"],
+            width=160,
         ).pack(side="right", padx=5)
 
         # === Results Area ===
@@ -119,15 +119,17 @@ class RecordsTab(ctk.CTkFrame):
         )
         results_label.pack(anchor="w", padx=20, pady=(10, 5))
 
-        self.results_table = SimpleTable(
+        self.results_table = EditableTable(
             content_frame,
-            headers=["Coluna 1", "Coluna 2", "Coluna 3"],
-            rows=[("Aguardando consulta...", "", "")],
+            headers=["#", "Coluna 1", "Coluna 2", "Coluna 3"],
+            rows=[["1", "Aguardando consulta...", "", ""]],
             fg_color=self.app.colors["input"],
             text_color=self.app.colors["text"],
             header_color=self.app.colors["surface"],
             accent_color=self.app.colors["accent"],
+            selected_color=self.app.colors.get("surface", "#334155"),
             min_col_width=100,
+            editable=False,
         )
         self.results_table.pack(fill="both", expand=True, padx=20, pady=(0, 20))
 
@@ -170,65 +172,76 @@ class RecordsTab(ctk.CTkFrame):
             if query_type == "incompatibilities":
                 headers = ["CAS A", "Nome A", "CAS B", "Nome B", "Regra", "Fonte"]
                 records = viewer.search_incompatibilities(limit=limit_int)
-                rows = [
-                    (
-                        r.get("cas_a"),
-                        r.get("name_a") or "",
-                        r.get("cas_b"),
-                        r.get("name_b") or "",
-                        r.get("rule"),
-                        r.get("source"),
+                rows = []
+                for i, r in enumerate(records, start=1):
+                    rows.append(
+                        (
+                            i,
+                            r.get("cas_a"),
+                            r.get("name_a") or "",
+                            r.get("cas_b"),
+                            r.get("name_b") or "",
+                            r.get("rule"),
+                            r.get("source"),
+                        )
                     )
-                    for r in records
-                ]
             elif query_type == "hazards":
                 headers = ["CAS", "Nome", "Flags", "Fonte"]
                 records = viewer.search_hazards(limit=limit_int)
-                rows = [
-                    (
-                        r.get("cas"),
-                        r.get("name") or "",
-                        ", ".join(
-                            f"{k}:{v}" for k, v in r.get("hazard_flags", {}).items()
-                        ),
-                        r.get("source"),
+                rows = []
+                for i, r in enumerate(records, start=1):
+                    rows.append(
+                        (
+                            i,
+                            r.get("cas"),
+                            r.get("name") or "",
+                            ", ".join(
+                                f"{k}:{v}" for k, v in r.get("hazard_flags", {}).items()
+                            ),
+                            r.get("source"),
+                        )
                     )
-                    for r in records
-                ]
             elif query_type == "cameo":
                 headers = ["ID", "Título", "Nome Químico", "URL", "Chunks"]
                 records = viewer.get_cameo_chemicals(limit=limit_int)
-                rows = [
-                    (
-                        r.get("id"),
-                        r.get("title"),
-                        r.get("chemical_name") or "",
-                        r.get("url") or "",
-                        r.get("chunk_count"),
+                rows = []
+                for i, r in enumerate(records, start=1):
+                    rows.append(
+                        (
+                            i,
+                            r.get("id"),
+                            r.get("title"),
+                            r.get("chemical_name") or "",
+                            r.get("url") or "",
+                            r.get("chunk_count"),
+                        )
                     )
-                    for r in records
-                ]
             elif query_type == "files":
                 headers = ["ID", "Título", "Nome Químico", "Caminho", "Chunks"]
                 records = viewer.get_file_documents(limit=limit_int)
-                rows = [
-                    (
-                        r.get("id"),
-                        r.get("title"),
-                        r.get("chemical_name") or "",
-                        r.get("path") or "",
-                        r.get("chunk_count"),
+                rows = []
+                for i, r in enumerate(records, start=1):
+                    rows.append(
+                        (
+                            i,
+                            r.get("id"),
+                            r.get("title"),
+                            r.get("chemical_name") or "",
+                            r.get("path") or "",
+                            r.get("chunk_count"),
+                        )
                     )
-                    for r in records
-                ]
 
             if not rows:
-                rows = [("Sem resultados",)]
+                headers = ["Resultado"]
+                rows = [(1, "Sem resultados")]  # include row number
 
+            # Prepend row number header
+            headers = ["#"] + headers
             self.app.after(
                 0,
                 lambda h=headers, r=rows: self.results_table.set_data(
-                    h or ["Resultado"], r, accent_color=self.app.colors["accent"]
+                    h or ["#", "Resultado"], r, accent_color=self.app.colors["accent"]
                 ),
             )
 

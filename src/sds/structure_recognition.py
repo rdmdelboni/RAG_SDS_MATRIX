@@ -290,8 +290,9 @@ class StructureRecognizer:
         try:
             import requests
             
-            # Search PubChem by name/formula
-            url = f"https://pubchem.ncbi.nlm.nih.gov/rest/pug/compound/name/{query}/property/CanonicalSMILES,InChI,InChIKey/JSON"
+            # Search PubChem by name/formula (URL-encode to handle special characters)
+            encoded_query = requests.utils.quote(query)
+            url = f"https://pubchem.ncbi.nlm.nih.gov/rest/pug/compound/name/{encoded_query}/property/CanonicalSMILES,InChI,InChIKey/JSON"
             
             response = requests.get(url, timeout=5)
             

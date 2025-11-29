@@ -8,6 +8,7 @@ from __future__ import annotations
 import customtkinter as ctk
 
 from ..components import SimpleTable, TitledFrame, TitleLabel
+from ..components.app_button import AppButton
 
 
 class SourcesTab(ctk.CTkFrame):
@@ -41,31 +42,34 @@ class SourcesTab(ctk.CTkFrame):
         local_btn_frame = ctk.CTkFrame(local_frame, fg_color="transparent")
         local_btn_frame.pack(fill="x", padx=10, pady=10)
 
-        ctk.CTkButton(
+        AppButton(
             local_btn_frame,
-            corner_radius=4,
             text="Add Local Files",
-            fg_color=self.app.colors["primary"],
-            font=self.app.button_font,
             command=self.app._on_ingest_local_files,
+            fg_color=self.app.colors["primary"],
+            text_color=self.app.colors["header"],
+            hover_color=self.app.colors["button_hover"],
+            width=180,
         ).pack(side="left", padx=5)
 
-        ctk.CTkButton(
+        AppButton(
             local_btn_frame,
-            corner_radius=4,
             text="Add Folder",
-            fg_color=self.app.colors["accent"],
-            font=self.app.button_font,
             command=self.app._on_ingest_local_folder,
+            fg_color=self.app.colors["accent"],
+            text_color=self.app.colors["header"],
+            hover_color=self.app.colors["button_hover"],
+            width=160,
         ).pack(side="left", padx=5)
 
-        ctk.CTkButton(
+        AppButton(
             local_btn_frame,
-            corner_radius=4,
             text="Load Snapshot",
-            fg_color=self.app.colors["success"],
-            font=self.app.button_font,
             command=self.app._on_ingest_snapshot_file,
+            fg_color=self.app.colors["success"],
+            text_color=self.app.colors["header"],
+            hover_color=self.app.colors["button_hover"],
+            width=180,
         ).pack(side="left", padx=5)
 
         # Web ingestion
@@ -85,13 +89,14 @@ class SourcesTab(ctk.CTkFrame):
         )
         self.app.sources_url_entry.pack(side="left", fill="x", expand=True, padx=5)
 
-        ctk.CTkButton(
+        AppButton(
             url_frame,
-            corner_radius=4,
             text="Fetch URL",
-            fg_color=self.app.colors["accent"],
-            font=self.app.button_font_sm,
             command=self.app._on_sources_add_url,
+            fg_color=self.app.colors["accent"],
+            text_color=self.app.colors["header"],
+            hover_color=self.app.colors["button_hover"],
+            width=140,
         ).pack(side="left", padx=5)
 
         search_frame = ctk.CTkFrame(web_frame, fg_color="transparent")
@@ -114,13 +119,14 @@ class SourcesTab(ctk.CTkFrame):
         self.app.sources_search_results_entry.insert(0, "5")
         self.app.sources_search_results_entry.pack(side="left", padx=5)
 
-        ctk.CTkButton(
+        AppButton(
             search_frame,
-            corner_radius=4,
             text="Google Search",
-            fg_color=self.app.colors["primary"],
-            font=self.app.button_font_sm,
             command=self.app._on_sources_search,
+            fg_color=self.app.colors["primary"],
+            text_color=self.app.colors["header"],
+            hover_color=self.app.colors["button_hover"],
+            width=160,
         ).pack(side="left", padx=5)
 
         # Simple URL batch ingestion
@@ -154,13 +160,14 @@ class SourcesTab(ctk.CTkFrame):
         )
         self.app.simple_urls_text.pack(fill="x", padx=10, pady=10)
 
-        ctk.CTkButton(
+        AppButton(
             batch_frame,
-            corner_radius=4,
             text="Fetch URLs (simple)",
-            fg_color=self.app.colors["primary"],
-            font=self.app.button_font_sm,
             command=self.app._on_simple_urls,
+            fg_color=self.app.colors["primary"],
+            text_color=self.app.colors["header"],
+            hover_color=self.app.colors["button_hover"],
+            width=200,
         ).pack(anchor="w", padx=10, pady=10)
 
         # Sources list
@@ -234,31 +241,34 @@ class SourcesTab(ctk.CTkFrame):
         bright_btn_frame = ctk.CTkFrame(bright_frame, fg_color="transparent")
         bright_btn_frame.pack(fill="x", pady=5, padx=10)
 
-        ctk.CTkButton(
+        AppButton(
             bright_btn_frame,
-            corner_radius=4,
             text="Trigger Crawl",
-            fg_color=self.app.colors["primary"],
-            font=self.app.button_font_sm,
             command=self.app._on_bright_trigger,
+            fg_color=self.app.colors["primary"],
+            text_color=self.app.colors["header"],
+            hover_color=self.app.colors["button_hover"],
+            width=160,
         ).pack(side="left", padx=5)
 
-        ctk.CTkButton(
+        AppButton(
             bright_btn_frame,
-            corner_radius=4,
             text="Check Status",
-            fg_color=self.app.colors["accent"],
-            font=self.app.button_font_sm,
             command=self.app._on_bright_check,
+            fg_color=self.app.colors["accent"],
+            text_color=self.app.colors["header"],
+            hover_color=self.app.colors["button_hover"],
+            width=160,
         ).pack(side="left", padx=5)
 
-        ctk.CTkButton(
+        AppButton(
             bright_btn_frame,
-            corner_radius=4,
             text="Download & Ingest",
-            fg_color=self.app.colors["success"],
-            font=self.app.button_font_sm,
             command=self.app._on_bright_download,
+            fg_color=self.app.colors["success"],
+            text_color=self.app.colors["header"],
+            hover_color=self.app.colors["button_hover"],
+            width=200,
         ).pack(side="left", padx=5)
 
         self.app.bright_snapshot_var = ctk.StringVar(value="Snapshot: None")
@@ -305,12 +315,14 @@ class SourcesTab(ctk.CTkFrame):
         )
         self.app.craw_seeds_text.pack(fill="x", pady=5, padx=10)
 
-        ctk.CTkButton(
+        AppButton(
             craw_frame,
-            corner_radius=4,
             text="Run Craw4AI Job",
-            fg_color=self.app.colors["accent"],
             command=self.app._on_craw4ai_run,
+            fg_color=self.app.colors["accent"],
+            text_color=self.app.colors["header"],
+            hover_color=self.app.colors["button_hover"],
+            width=200,
         ).pack(anchor="w", padx=10, pady=10)
 
         # Status label

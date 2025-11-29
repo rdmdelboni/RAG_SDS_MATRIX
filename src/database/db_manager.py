@@ -83,6 +83,10 @@ class DatabaseManager:
 
         logger.info("Connected to DuckDB: %s", self.db_path)
         self._initialize_schema()
+        try:
+            self._create_indexes()
+        except Exception as exc:  # pragma: no cover - defensive guard
+            logger.warning("Skipping index creation: %s", exc)
 
     def _initialize_schema(self) -> None:
         """Create database schema if not exists."""
@@ -238,11 +242,7 @@ class DatabaseManager:
                 );
             """
             )
-            
-            # Create indexes for performance optimization (lazy - do this after app starts)
-            # self._create_indexes()  # TODO: Run this asynchronously or lazily
-            logger.info("Deferred index creation (will be done lazily)")
-    
+
     def _create_indexes(self) -> None:
         """Create database indexes for frequently queried fields."""
         logger.debug("Creating database indexes")

@@ -4,7 +4,12 @@ A RAG-enhanced Safety Data Sheet (SDS) processor that extracts chemical safety i
 
 ## Features
 
-- **Hybrid Extraction Pipeline**: Combines regex heuristics, LLM refinement, and RAG enrichment
+- **Hybrid Extraction Pipeline**: Combines regex heuristics, LLM refinement, PubChem enrichment, and RAG augmentation
+- **PubChem Integration**: Automatic validation and enrichment using PubChem's chemical database
+  - Validates CAS numbers, product names, and molecular formulas
+  - Fills missing fields (molecular weight, IUPAC names, structure identifiers)
+  - Enriches GHS hazard statements (H/P codes) with complete classifications
+  - Detects inconsistencies and data quality issues
 - **Multi-format Support**: Process PDF, TXT, MD, and DOCX SDS documents
 - **Chemical Compatibility Matrix**: Automatic generation of incompatibility matrices
 - **Structured Data Integration**: JSONL-based incompatibility rules and hazard records
@@ -23,16 +28,21 @@ A RAG-enhanced Safety Data Sheet (SDS) processor that extracts chemical safety i
 ┌─────────────────────────────────────────────────────────────┐
 │                    Processing Pipeline                       │
 │  ┌──────────────┐  ┌──────────────┐  ┌──────────────┐     │
-│  │  Heuristics  │→ │  LLM Refine  │→ │ RAG Enrich   │     │
-│  │  (Regex)     │  │  (Ollama)    │  │  (ChromaDB)  │     │
+│  │  Heuristics  │→ │  LLM Refine  │→ │  PubChem     │     │
+│  │  (Regex)     │  │  (Ollama)    │  │  Enrichment  │     │
 │  └──────────────┘  └──────────────┘  └──────────────┘     │
+│                                              ↓               │
+│                         ┌──────────────────────────────┐    │
+│                         │   RAG Completion (Optional)  │    │
+│                         │      (ChromaDB)              │    │
+│                         └──────────────────────────────┘    │
 └─────────────────────────────────────────────────────────────┘
                             │
 ┌─────────────────────────────────────────────────────────────┐
 │                    Data Layer                                │
 │  ┌──────────────┐  ┌──────────────┐  ┌──────────────┐     │
-│  │   DuckDB     │  │   ChromaDB   │  │  LangChain   │     │
-│  │ (Structured) │  │  (Vectors)   │  │ (Orchestrate)│     │
+│  │   DuckDB     │  │   ChromaDB   │  │  PubChem API │     │
+│  │ (Structured) │  │  (Vectors)   │  │  (External)  │     │
 │  └──────────────┘  └──────────────┘  └──────────────┘     │
 └─────────────────────────────────────────────────────────────┘
 ```
