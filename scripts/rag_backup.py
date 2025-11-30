@@ -394,7 +394,52 @@ Examples:
             logger.info(f"Would backup to: {args.output}")
             return 0
 
-        backup_manager = RAGBackupManager(args.db)
+        # Validate DB path exists
+        db_path = Path(args.db)
+        if not db_path.exists():
+            logger.error(f"Database file not found: {db_path}")
+            print(f"Error: Database file not found: {db_path}")
+            return 1
+
+        # Always use temporary copy to avoid file lock contention
+        import shutil
+        import tempfile
+        
+        logger.info("Creating temporary DB copy to avoid file lock contention")
+        tmp_dir = tempfile.mkdtemp(prefix="rag_backup_")
+        tmp_db = Path(tmp_dir) / "extractions_temp.db"
+        
+        try:
+            shutil.copy2(db_path, tmp_db)
+            backup_manager = RAGBackupManager(str(tmp_db))
+            logger.info(f"Using temporary DB copy: {tmp_db}")
+        except Exception as exc:
+            logger.error(f"Failed to create/use temporary DB copy: {exc}")
+            print(f"Error: Failed to create temporary DB copy: {exc}")
+            return 1
+
+        # Preflight: required tables
+        try:
+            existing = set(
+                r[0]
+                for r in backup_manager.conn.execute(
+                    "SELECT table_name FROM information_schema.tables WHERE table_schema='main'"
+                ).fetchall()
+            )
+            required = {"rag_incompatibilities", "rag_hazards", "rag_documents"}
+            missing = sorted(list(required - existing))
+        except Exception as exc:
+            logger.error(f"Failed to check tables: {exc}")
+            missing = []
+        if missing:
+            logger.error("Missing required tables: %s", ", ".join(missing))
+            print(
+                "Error: Missing required tables: "
+                + ", ".join(missing)
+                + "\nRun ingestion or database initialization before backup."
+            )
+            return 1
+
         results = backup_manager.backup_all(args.output)
 
         # Print summary

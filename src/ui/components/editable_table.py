@@ -5,6 +5,7 @@ Enhanced editable table widget that uses tkintertable for reliable column resizi
 from __future__ import annotations
 
 from typing import Any, Callable, Iterable, Sequence
+import tkinter as tk
 
 import customtkinter as ctk
 
@@ -34,6 +35,12 @@ class CallbackTableModel(TableModel):
         data: dict | None = None,
         on_cell_edit: Callable[[int, int, Any], None] | None = None,
     ) -> None:
+        # Predefine attributes expected by tkintertable.TableModel.setupModel
+        # before invoking the base initializer to avoid AttributeError.
+        self.columnNames: list[str] = []
+        self.columnlabels: dict[str, str] = {}
+        self.rows: int = 0
+        self.columns: int = 0
         super().__init__(newdict=data)
         self._on_cell_edit = on_cell_edit
 
@@ -93,11 +100,23 @@ class EditableTable(ctk.CTkFrame):
         headers_list = list(headers) if headers else []
         rows_list = [list(r) for r in rows] if rows else []
 
-        if _TKINTERTABLE_AVAILABLE:
+        # CustomTkinter restricts bind_all, which tkintertable uses.
+        # To avoid runtime errors, use tkintertable only when not hosted
+        # under a CustomTkinter widget hierarchy.
+        using_ctk = isinstance(master, ctk.CTkBaseClass) if hasattr(ctk, "CTkBaseClass") else isinstance(master, ctk.CTkFrame)
+        use_tkintertable = _TKINTERTABLE_AVAILABLE and not using_ctk
+        self._use_tkintertable = use_tkintertable
+
+        if use_tkintertable:
             self.model = self._build_model(headers_list, rows_list)
 
+            # Use a native tkinter Frame to host TableCanvas to avoid
+            # customtkinter's bind_all restriction.
+            self._tk_frame = tk.Frame(self)
+            self._tk_frame.pack(fill="both", expand=True)
+
             self.table = TableCanvas(
-                self,
+                self._tk_frame,
                 model=self.model,
                 read_only=not editable,
                 rowheight=row_height,
@@ -134,6 +153,8 @@ class EditableTable(ctk.CTkFrame):
                 font=font,
                 header_font=header_font,
                 row_height=row_height,
+                on_row_double_click=self.on_row_double_click,
+                on_cell_edit=self.on_cell_edit,
             )
             self.table.pack(fill="both", expand=True)
 
@@ -165,7 +186,7 @@ class EditableTable(ctk.CTkFrame):
 
     def _bind_events(self) -> None:
         """Attach selection and double-click callbacks without overriding defaults."""
-        if _TKINTERTABLE_AVAILABLE:
+        if self._use_tkintertable:
             self.table.bind("<ButtonRelease-1>", self._handle_row_click, add="+")
             self.table.bind("<Double-Button-1>", self._handle_double_click, add="+")
             self._bind_row_header_event()
@@ -231,7 +252,7 @@ class EditableTable(ctk.CTkFrame):
             self.selected_color = accent_color
 
         rows_list = [list(r) for r in rows] if rows else []
-        if _TKINTERTABLE_AVAILABLE:
+        if self._use_tkintertable:
             self.model = self._build_model(list(headers), rows_list)
             self.table.updateModel(self.model)
             self.table.thefont = self.font
@@ -271,6 +292,32 @@ class EditableTable(ctk.CTkFrame):
             return data
         else:
             return self.table.get_all_data()
+
+    def bind_column_double_click(self, col_idx: int, callback: Callable[[int], None]) -> None:
+        """Bind double-click handler for a specific column.
+
+        Works in SimpleTable fallback; no-op in tkintertable mode (already handles row double-clicks).
+        """
+        if getattr(self, "_use_tkintertable", False):
+            # Rely on on_row_double_click provided at construction
+            return
+        # SimpleTable: attach handler to cells in the given column
+        try:
+            cell_labels = getattr(self.table, "_cell_labels", {})
+            for (row, col), label in list(cell_labels.items()):
+                if col == col_idx:
+                    try:
+                        def _handler(_event=None, r=row):
+                            try:
+                                callback(r)
+                            except Exception:
+                                pass
+                        label.bind("<Double-Button-1>", _handler)
+                        label.bind("<Button-1>", _handler)  # single click fallback
+                    except Exception:
+                        continue
+        except Exception:
+            pass
 
     def _handle_row_click(self, event) -> None:
         """Handle row selection callback without breaking default behavior."""

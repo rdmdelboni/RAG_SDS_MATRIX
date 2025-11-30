@@ -78,7 +78,7 @@ class RecordsTab(ctk.CTkFrame):
             text_color=self.app.colors["text"],
         ).pack(side="left", padx=5)
 
-        self.limit_var = ctk.StringVar(value="20")
+        self.limit_var = ctk.StringVar(value="50")
         limit_entry = ctk.CTkEntry(
             limit_frame,
             textvariable=self.limit_var,
@@ -150,7 +150,7 @@ class RecordsTab(ctk.CTkFrame):
         try:
             limit_int = max(1, int(limit))
         except ValueError:
-            limit_int = 20
+            limit_int = 50
 
         tmp_dir: Path | None = None
         try:
@@ -263,9 +263,11 @@ class RecordsTab(ctk.CTkFrame):
     def _copy_results(self) -> None:
         """Copy the current results to the clipboard for easy sharing."""
         try:
-            text = self.results_text.get("1.0", "end").strip()
-            if not text:
+            data = self.results_table.get_all_data()
+            if not data:
                 return
+            # Format as tab-separated values for pasting into spreadsheets
+            text = "\n".join("\t".join(str(cell) for cell in row) for row in data)
             self.app.clipboard_clear()
             self.app.clipboard_append(text)
             self.app.update()  # ensure clipboard is updated

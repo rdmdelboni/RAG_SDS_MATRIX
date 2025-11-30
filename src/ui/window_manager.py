@@ -131,6 +131,12 @@ class WindowManager:
             screen_width = self.window.winfo_screenwidth()
             screen_height = self.window.winfo_screenheight()
 
+            # Detect multi-monitor and constrain to single monitor
+            if screen_width > 3000:  # Likely multi-monitor setup
+                screen_width = 1920  # Default to common single monitor width
+            if screen_height > 2000:
+                screen_height = 1080
+
             # Calculate responsive size: 85% of screen
             # This gives good workspace while leaving room for taskbar/other windows
             default_width = int(screen_width * 0.85)
@@ -148,9 +154,9 @@ class WindowManager:
             x = (screen_width - window_width) // 2
             y = (screen_height - window_height) // 2
 
-            # Ensure position is not negative
+            # Ensure position is not negative and at least 20px from top
             x = max(0, x)
-            y = max(0, y)
+            y = max(20, y)
 
             # Set window geometry
             self.window.geometry(f"{window_width}x{window_height}+{x}+{y}")
@@ -173,6 +179,12 @@ class WindowManager:
 
             screen_width = self.window.winfo_screenwidth()
             screen_height = self.window.winfo_screenheight()
+
+            # Constrain to single monitor for validation
+            if screen_width > 3000:
+                screen_width = 1920
+            if screen_height > 2000:
+                screen_height = 1080
 
             # Check minimum size
             if state.width < self.settings.ui.min_width or state.height < self.settings.ui.min_height:

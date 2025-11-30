@@ -229,10 +229,23 @@ class Application(ctk.CTk):
     def _center_window(self) -> None:
         """Center the window using configured dimensions without further resizing."""
         try:
+            # Get primary monitor dimensions (not combined screen width)
             screen_w = self.winfo_screenwidth()
             screen_h = self.winfo_screenheight()
             target_w = int(self.settings.ui.window_width)
             target_h = int(self.settings.ui.window_height)
+            
+            # Ensure window fits on single monitor
+            # If screen_w suggests multi-monitor, use reasonable single monitor width
+            if screen_w > 3000:  # Likely multi-monitor setup
+                screen_w = 1920  # Default to common single monitor width
+            if screen_h > 2000:
+                screen_h = 1080
+            
+            # Clamp window size to screen
+            target_w = min(target_w, screen_w - 40)
+            target_h = min(target_h, screen_h - 40)
+            
             x = max(0, (screen_w - target_w) // 2)
             # Ensure at least 20px from the top edge
             y = max(20, (screen_h - target_h) // 2)
@@ -432,12 +445,64 @@ class Application(ctk.CTk):
             if abs(w - prev_w) < 10 and abs(h - prev_h) < 10:
                 return
             self._apply_ui_scaling(initial=False, width=w, height=h)
+            # Ensure vertical expansion across all tabs and containers
+            self._apply_vertical_layout(window_width=w, window_height=h)
             self._last_size = (w, h)
             self._last_scale_update = time.time()
         except Exception:
             pass
         finally:
             self._resize_after_id = None
+
+    def _apply_vertical_layout(self, *, window_width: int | None = None, window_height: int | None = None) -> None:
+        """Adjust container heights so tabs expand vertically on resize."""
+        try:
+            self.update_idletasks()
+            h = window_height or self.winfo_height()
+            # Estimate header and status bar heights
+            header_h = getattr(self.header_bar, 'winfo_height', lambda: 40)()
+            status_h = getattr(self.status_bar, 'winfo_height', lambda: 32)()
+            padding = 16  # main_frame top/bottom padding total
+            available_h = max(self.settings.ui.min_height, h - header_h - status_h - padding)
+
+            # Main scrollable frame gets available height
+            try:
+                self.main_frame.configure(height=available_h)
+            except Exception:
+                pass
+
+            # Tab view height
+            try:
+                self.tab_view.configure(height=available_h - 8)
+            except Exception:
+                pass
+
+            # Ensure each tab content expands fully
+            for tab_name in [
+                get_text("tab.rag"),
+                get_text("tab.sources"),
+                get_text("tab.sds"),
+                "Records",
+                "Review",
+                "Quality",
+                "Backup",
+                "Status",
+                "Chat",
+            ]:
+                try:
+                    tab = self.tab_view.tab(tab_name)
+                    if tab:
+                        tab.update_idletasks()
+                        # Re-pack children to fill and expand
+                        for child in tab.winfo_children():
+                            try:
+                                child.pack_configure(fill="both", expand=True)
+                            except Exception:
+                                pass
+                except Exception:
+                    continue
+        except Exception:
+            pass
 
     def _setup_header_bar(self) -> None:
         """Top header with app title and close button."""
@@ -481,6 +546,17 @@ class Application(ctk.CTk):
             # Use configured size (no automatic sizing)
             target_w = int(self.settings.ui.window_width)
             target_h = int(self.settings.ui.window_height)
+
+            # Ensure window fits on single monitor
+            # If screen_w suggests multi-monitor, use reasonable single monitor width
+            if screen_w > 3000:  # Likely multi-monitor setup
+                screen_w = 1920  # Default to common single monitor width
+            if screen_h > 2000:
+                screen_h = 1080
+            
+            # Clamp window size to screen
+            target_w = min(target_w, screen_w - 40)
+            target_h = min(target_h, screen_h - 40)
 
             # Center on screen
             x = max(0, (screen_w - target_w) // 2)

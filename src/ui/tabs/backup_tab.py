@@ -67,6 +67,20 @@ class BackupTab(ctk.CTkFrame):
             height=40,
         ).pack(fill="x")
 
+        # Open folder button (enabled after successful backup)
+        self.open_folder_btn = ctk.CTkButton(
+            backup_frame,
+            corner_radius=4,
+            text="Open Backup Folder",
+            command=self._open_backup_folder,
+            fg_color=self.app.colors.get("primary", "#6272a4"),
+            text_color=self.app.colors["header"],
+            font=self.app.button_font_sm,
+        )
+        self.open_folder_btn.pack(fill="x", pady=(10, 0))
+        self.open_folder_btn.configure(state="disabled")
+        self._last_backup_path: str | None = None
+
         # === Status Section ===
         status_label = ctk.CTkLabel(
             content_frame,
@@ -88,12 +102,44 @@ class BackupTab(ctk.CTkFrame):
         )
         self.status_table.pack(fill="both", expand=True, padx=20, pady=(0, 20))
 
+        # Summary counts label (filled after successful backup)
+        self.summary_label = ctk.CTkLabel(
+            content_frame,
+            text="",
+            font=("JetBrains Mono", 12),
+            text_color=self.app.colors["text"],
+            justify="left",
+        )
+        self.summary_label.pack(anchor="w", padx=20, pady=(0, 12))
+
     def _on_backup_rag(self) -> None:
         """Handle RAG backup."""
         output_folder = filedialog.askdirectory(
             title="Select Backup Location", parent=self
         )
         if not output_folder:
+            return
+
+        # Preflight checks: DB exists and output folder is writable
+        try:
+            db_path = getattr(self.app.settings.paths, "duckdb", None)
+            if not db_path or not Path(db_path).exists():
+                messagebox.showerror(
+                    "Database Missing",
+                    f"DuckDB file not found:\n{db_path}\nConfigure the correct path in settings and try again.",
+                )
+                return
+            # Ensure output folder can be created/written
+            Path(output_folder).mkdir(parents=True, exist_ok=True)
+            test_file = Path(output_folder) / ".write_test"
+            try:
+                with open(test_file, "w") as f:
+                    f.write("ok")
+            finally:
+                if test_file.exists():
+                    test_file.unlink(missing_ok=True)
+        except Exception as exc:
+            messagebox.showerror("Folder Error", f"Cannot use selected folder: {exc}")
             return
 
         # Run backup in thread
@@ -111,11 +157,15 @@ class BackupTab(ctk.CTkFrame):
                 ),
             )
 
+            # Use configured DuckDB path from settings to avoid path mismatches
+            db_path = str(getattr(self.app.settings.paths, "duckdb", "data/duckdb/extractions.db"))
             cmd = [
                 sys.executable,
                 "scripts/rag_backup.py",
                 "--output",
                 output_folder,
+                "--db",
+                db_path,
             ]
 
             # Run script
@@ -136,10 +186,42 @@ class BackupTab(ctk.CTkFrame):
             )
 
             if result.returncode == 0:
+                # Parse backup location from stdout if present
+                backup_path = None
+                for ln in lines:
+                    if ln.strip().startswith("📁 Backup location:"):
+                        backup_path = ln.split(":", 1)[1].strip()
+                        break
+                self._last_backup_path = backup_path or output_folder
+                # Enable open folder button
+                self.app.after(0, lambda: self.open_folder_btn.configure(state="normal"))
+                # Show summary
                 success_msg = (
-                    f"\nBackup completed successfully!\nFiles saved to: {output_folder}"
+                    f"Backup completed successfully!\nFolder: {self._last_backup_path}"
                 )
                 self.app.after(0, lambda: messagebox.showinfo("Success", success_msg))
+
+                # Parse per-category record counts and render summary
+                counts = {"INCOMPATIBILITIES": None, "HAZARDS": None, "DOCUMENTS": None}
+                current = None
+                for ln in lines:
+                    s = ln.strip()
+                    if s.endswith(":") and s[:-1].upper() in counts:
+                        current = s[:-1].upper()
+                        continue
+                    if current and s.startswith("Records:"):
+                        try:
+                            num = int(s.split(":", 1)[1].strip())
+                            counts[current] = num
+                        except Exception:
+                            pass
+                        current = None
+                summary_text = (
+                    f"Incompatibilities: {counts['INCOMPATIBILITIES'] or 0}\n"
+                    f"Hazards: {counts['HAZARDS'] or 0}\n"
+                    f"Documents: {counts['DOCUMENTS'] or 0}"
+                )
+                self.app.after(0, lambda txt=summary_text: self.summary_label.configure(text=txt))
             else:
                 error_msg = "\nBackup failed. Check log for details."
                 self.app.after(0, lambda: messagebox.showerror("Error", error_msg))
@@ -148,3 +230,20 @@ class BackupTab(ctk.CTkFrame):
             error_msg = f"\nError executing backup: {str(e)}"
             self.app.after(0, lambda: self.status_text.insert("end", error_msg))
             self.app.after(0, lambda msg=str(e): messagebox.showerror("Error", msg))
+
+    def _open_backup_folder(self) -> None:
+        """Open the last backup folder in the system file manager."""
+        path = self._last_backup_path
+        if not path:
+            messagebox.showinfo("No Backup", "Run a backup first.")
+            return
+        try:
+            # Prefer xdg-open on Linux
+            subprocess.Popen(["xdg-open", path])
+        except Exception:
+            try:
+                # Fallback: open via Python
+                import webbrowser
+                webbrowser.open(f"file://{Path(path).resolve()}")
+            except Exception as exc:
+                messagebox.showerror("Open Folder Failed", str(exc))
