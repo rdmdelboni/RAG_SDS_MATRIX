@@ -36,6 +36,8 @@ class SimpleTable(ctk.CTkFrame):
         min_col_width: int = 80,
         checkbox_column: bool = False,
         on_selection_change: Callable[[List[str]], None] | None = None,
+        on_row_double_click: Callable[[int], None] | None = None,
+        on_cell_edit: Callable[[int, int, str], None] | None = None,
         **kwargs,
     ) -> None:
         super().__init__(master, fg_color=fg_color, **kwargs)
@@ -66,6 +68,8 @@ class SimpleTable(ctk.CTkFrame):
         self._row_selection_vars: list[ctk.BooleanVar] = []
         self._selection_suspended = False  # Prevent callback storm during bulk ops
 
+        self.on_row_double_click = on_row_double_click
+        self.on_cell_edit = on_cell_edit
         self._create_widgets()
         self._last_total_width: int | None = None
 
@@ -369,6 +373,63 @@ class SimpleTable(ctk.CTkFrame):
                     justify="left",
                 )
                 cell_label.pack(fill="both", expand=True)
+
+                # Create unified double-click handler that prioritizes row callback over inline edit
+                def _unified_double_click(_event=None, parent=col_frame, label_ref=cell_label, r=current_row_num, c=i, idx=row_index):
+                    # If row double-click callback exists, prioritize it (for edit dialogs)
+                    if self.on_row_double_click:
+                        try:
+                            self.on_row_double_click(idx)
+                        except Exception:
+                            pass
+                    # Only do inline edit if no row callback or if it's an editable column and no row callback consumed the event
+                    elif self.on_cell_edit and c >= 3 and c <= 6:
+                        try:
+                            current_val = label_ref.cget("text")
+                            entry = ctk.CTkEntry(
+                                parent,
+                                font=(self.font[0], max(self.font[1]-2, 10)),
+                                fg_color=self.fg_color,
+                                text_color=self.text_color,
+                            )
+                            entry.insert(0, current_val)
+                            label_ref.pack_forget()
+                            entry.pack(fill="x", expand=True)
+
+                            def _commit(_e=None):
+                                new_val = entry.get()
+                                # Update internal rows
+                                if 0 <= r < len(self.rows) and 0 <= c < len(self.rows[r]):
+                                    self.rows[r][c] = new_val
+                                # Restore label
+                                try:
+                                    entry.pack_forget()
+                                    label_ref.configure(text=new_val)
+                                    label_ref.pack(fill="both", expand=True)
+                                except Exception:
+                                    pass
+                                # Callback
+                                try:
+                                    if self.on_cell_edit:
+                                        self.on_cell_edit(r, c, new_val)
+                                except Exception:
+                                    pass
+
+                            entry.bind("<Return>", _commit)
+                            entry.bind("<FocusOut>", _commit)
+                            try:
+                                entry.focus_set()
+                                entry.icursor(len(current_val))
+                            except Exception:
+                                pass
+                        except Exception:
+                            pass
+
+                try:
+                    cell_label.bind("<Double-Button-1>", _unified_double_click)
+                except Exception:
+                    pass
+
                 # Store reference to cell label for dynamic updates during resize
                 self._cell_labels[(current_row_num, i)] = cell_label
 
