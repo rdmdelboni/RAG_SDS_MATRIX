@@ -599,7 +599,7 @@ class MainWindow(QtWidgets.QMainWindow):
             f"background-color: {self.colors['primary']};"
             "border: none;"
             "border-radius: 4px;"
-            f"color: {self.colors.get('button_text', '#585b70')};"
+            f"color: {self.colors['text']};"
             "padding: 6px 12px;"
             "font-weight: 500;"
             "}"
