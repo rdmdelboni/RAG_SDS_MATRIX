@@ -88,33 +88,33 @@ class CatppuccinLatte:
     lavender: str = "#7287fd"
 
 
-# Theme mapping for UI
+# Theme mapping for UI - Catppuccin Mocha
 COLORS_DARK: Final[dict[str, str]] = {
-    # Base and surfaces
-    "bg": "#0b1220",
-    "surface": "#111a2d",
-    "overlay": "#162238",
-    "header": "#0f172a",
-    "input": "#1b2740",
-    # Text
-    "text": "#e2e8f0",
-    "subtext": "#a6adc8",
-    # Accents
-    "accent": "#4fd1c5",  # teal
-    "primary": "#1e40af",  # darker blue
-    "primary_hover": "#3b82f6",  # bright blue
-    "success": "#22c55e",
-    "warning": "#f59e0b",
-    "error": "#f87171",
-    "button_hover": "#3b82f6",
-    # Tabs / trees
-    "tab_inactive": "#1c2b47",
-    "tab_active": "#2b3b63",
-    "tab_hover": "#355080",
-    "tree_bg": "#111a2d",
-    "tree_fg": "#e6edf3",
-    "tree_selected": "#4fd1c5",
-    "tree_selected_fg": "#0b1220",
+    # Base and surfaces (Catppuccin Mocha)
+    "bg": CatppuccinMocha.crust,  # #11111b
+    "surface": CatppuccinMocha.surface0,  # #313244
+    "overlay": CatppuccinMocha.overlay0,  # #6c7086
+    "header": CatppuccinMocha.mantle,  # #181825
+    "input": CatppuccinMocha.surface1,  # #45475a
+    # Text (Catppuccin Mocha)
+    "text": CatppuccinMocha.text,  # #cdd6f4
+    "subtext": CatppuccinMocha.subtext0,  # #a6adc8
+    # Accents (Catppuccin Mocha)
+    "accent": CatppuccinMocha.teal,  # #94e2d5
+    "primary": CatppuccinMocha.sapphire,  # #74c7ec (darker blue)
+    "primary_hover": CatppuccinMocha.blue,  # #89b4fa (bright blue)
+    "success": CatppuccinMocha.green,  # #a6e3a1
+    "warning": CatppuccinMocha.yellow,  # #f9e2af
+    "error": CatppuccinMocha.red,  # #f38ba8
+    "button_hover": CatppuccinMocha.blue,  # #89b4fa
+    # Tabs / trees (Catppuccin Mocha)
+    "tab_inactive": CatppuccinMocha.surface0,  # #313244
+    "tab_active": CatppuccinMocha.surface1,  # #45475a
+    "tab_hover": CatppuccinMocha.surface2,  # #585b70
+    "tree_bg": CatppuccinMocha.surface0,  # #313244
+    "tree_fg": CatppuccinMocha.text,  # #cdd6f4
+    "tree_selected": CatppuccinMocha.teal,  # #94e2d5
+    "tree_selected_fg": CatppuccinMocha.crust,  # #11111b
 }
 
 COLORS_LIGHT: Final[dict[str, str]] = {
