@@ -383,8 +383,9 @@ class EditDialog:
         except Exception:
             self.dialog.configure(bg=app.colors["bg"])
 
-        # Make modal
+        # Make modal - but need to update first to make it viewable
         self.dialog.transient(parent)
+        self.dialog.update_idletasks()  # Force window to be created and viewable
         self.dialog.grab_set()
 
         try:
