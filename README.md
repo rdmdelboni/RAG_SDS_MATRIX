@@ -22,7 +22,7 @@ A RAG-enhanced Safety Data Sheet (SDS) processor that extracts chemical safety i
 ```
 ┌─────────────────────────────────────────────────────────────┐
 │                         UI Layer                             │
-│              (CustomTkinter - Modern GUI)                    │
+│         (PySide6 / Qt - Desktop GUI, follows OS theme)       │
 └─────────────────────────────────────────────────────────────┘
                             │
 ┌─────────────────────────────────────────────────────────────┐
@@ -247,7 +247,7 @@ RAG_SDS_MATRIX/
 │   ├── models/           # Ollama LLM client
 │   ├── rag/              # Vector store, chunking, retrieval
 │   ├── sds/              # SDS extraction pipeline
-│   ├── ui/               # CustomTkinter interface
+│   ├── ui/               # PySide6/Qt interface
 │   └── utils/            # Logging utilities
 │
 ├── tests/                # Test suite
@@ -365,7 +365,7 @@ This project is licensed under the MIT License - see the LICENSE file for detail
 - **ChromaDB**: Vector database
 - **DuckDB**: Analytical database
 - **Ollama**: Local LLM inference
-- **CustomTkinter**: Modern UI framework
+- **PySide6 (Qt)**: Desktop UI framework
 
 ## Support
 

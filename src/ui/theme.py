@@ -97,8 +97,8 @@ COLORS_DARK: Final[dict[str, str]] = {
     "header": "#0f172a",
     "input": "#1b2740",
     # Text
-    "text": "#e6edf3",
-    "subtext": "#97a3b6",
+    "text": "#e2e8f0",
+    "subtext": "#a6adc8",
     # Accents
     "accent": "#4fd1c5",  # teal
     "primary": "#3b82f6",  # blue
@@ -124,7 +124,7 @@ COLORS_LIGHT: Final[dict[str, str]] = {
     "header": "#d0d9e8",
     "input": "#eef2f8",
     # Text
-    "text": "#1f2937",
+    "text": "#2b2b2b",
     "subtext": "#4b5563",
     # Accents
     "accent": "#0ea5e9",

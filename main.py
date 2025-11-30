@@ -19,9 +19,9 @@ def check_dependencies() -> bool:
     missing = []
 
     try:
-        import customtkinter
+        from PySide6 import QtWidgets  # type: ignore
     except ImportError:
-        missing.append("customtkinter")
+        missing.append("PySide6")
 
     try:
         import chromadb

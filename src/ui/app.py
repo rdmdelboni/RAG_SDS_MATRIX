@@ -1,1811 +1,1042 @@
-"""Main application UI - RAG SDS Matrix."""
+"""PySide6-based UI for RAG SDS Matrix.
+
+This replaces the previous CustomTkinter UI with a Qt implementation. It keeps
+core workflows (knowledge ingestion, SDS processing, matrix export/build, basic
+status views) while relying on the existing backend services.
+"""
 
 from __future__ import annotations
 
-import json
-import threading
+import subprocess
+import traceback
+import sys
 from pathlib import Path
-import time
-from tkinter import END, filedialog, messagebox
+from typing import Callable, Iterable
 
-import customtkinter as ctk
+from PySide6 import QtCore, QtGui, QtWidgets
 
 from ..config import get_settings, get_text
 from ..config.constants import SUPPORTED_FORMATS
 from ..config.i18n import set_language
 from ..database import get_db_manager
+from ..matrix.builder import MatrixBuilder
+from ..matrix.exporter import MatrixExporter
 from ..models import get_ollama_client
-from ..rag.chunker import TextChunker
-from ..rag.document_loader import DocumentLoader
 from ..rag.ingestion_service import IngestionSummary, KnowledgeIngestionService
-from ..rag.vector_store import get_vector_store
+from ..sds.processor import SDSProcessor
 from ..utils.logger import get_logger
-from .tabs import BackupTab, ChatTab, RagTab, RecordsTab, ReviewTab, SdsTab, SourcesTab, StatusTab
 from .theme import get_colors
-from .window_manager import create_window_manager
 
 logger = get_logger(__name__)
 
 
-class Application(ctk.CTk):
-    """Main application window."""
+class WorkerSignals(QtCore.QObject):
+    """Signals shared by background workers."""
+
+    finished = QtCore.Signal(object)
+    error = QtCore.Signal(str)
+    message = QtCore.Signal(str)
+    progress = QtCore.Signal(int, str)  # percent, label
+
+
+class TaskRunner(QtCore.QRunnable):
+    """Generic QRunnable wrapper to execute callables in a thread pool."""
+
+    def __init__(self, fn: Callable, *args, **kwargs) -> None:
+        super().__init__()
+        self.fn = fn
+        self.args = args
+        self.kwargs = kwargs
+        self.signals = WorkerSignals()
+
+    @QtCore.Slot()
+    def run(self) -> None:  # pragma: no cover - Qt thread dispatch
+        try:
+            result = self.fn(*self.args, signals=self.signals, **self.kwargs)
+            self.signals.finished.emit(result)
+        except Exception as exc:  # pragma: no cover - runtime safety
+            logger.error("Worker error: %s", exc)
+            logger.debug(traceback.format_exc())
+            self.signals.error.emit(str(exc))
+            self.signals.finished.emit(None)
+
+
+class MainWindow(QtWidgets.QMainWindow):
+    """Main Qt window."""
 
     def __init__(self) -> None:
         super().__init__()
 
         self.settings = get_settings()
-        self.colors = get_colors(self.settings.ui.theme)
-        self.logger = logger
-        self.button_font = ("Segoe UI", 12, "bold")
-        self.button_font_sm = ("Segoe UI", 11, "bold")
-
-        # Initialize services (with simple startup timings)
-        t0 = time.time()
+        theme_pref = (self.settings.ui.theme or "system").lower()
+        if theme_pref == "system":
+            theme_pref = "dark" if self._system_prefers_dark() else "light"
+        self.colors = get_colors(theme_pref)
         self.db = get_db_manager()
-        t_db = (time.time() - t0) * 1000
-
-        t1 = time.time()
-        self.ollama = get_ollama_client()
-        t_ol = (time.time() - t1) * 1000
-
-        t2 = time.time()
-        self.doc_loader = DocumentLoader()
-        self.chunker = TextChunker()
-        self.vector_store = get_vector_store()
         self.ingestion = KnowledgeIngestionService()
-        t_rest = (time.time() - t2) * 1000
-        # sds_file_rows: filename -> (status, chemical_name)
-        self.sds_file_rows: dict[str, tuple[str, str]] = {}
-        self.selected_sds_files: list[str] = []
+        self.ollama = get_ollama_client()
+        self.thread_pool = QtCore.QThreadPool.globalInstance()
+        self._workers: list[TaskRunner] = []
 
-        # Fixar idioma da UI/relatórios em Português, independentemente do idioma do documento processado
         set_language(self.settings.ui.language or "pt")
 
-        # Configure window (responsive)
-        self.title(get_text("app.title"))
-        self.minsize(self.settings.ui.min_width, self.settings.ui.min_height)
-        self.configure(fg_color=self.colors["bg"])
+        self.setWindowTitle(get_text("app.title"))
+        self.resize(self.settings.ui.window_width, self.settings.ui.window_height)
+        self.setMinimumSize(self.settings.ui.min_width, self.settings.ui.min_height)
 
-        # Configure CustomTkinter
-        ctk.set_appearance_mode("dark" if self.settings.ui.theme == "dark" else "light")
-        self._apply_ui_scaling(initial=True)
+        palette = self.palette()
+        palette.setColor(QtGui.QPalette.Window, QtGui.QColor(self.colors["bg"]))
+        palette.setColor(QtGui.QPalette.WindowText, QtGui.QColor(self.colors["text"]))
+        palette.setColor(QtGui.QPalette.Button, QtGui.QColor(self.colors["surface"]))
+        palette.setColor(QtGui.QPalette.ButtonText, QtGui.QColor(self.colors["text"]))
+        palette.setColor(QtGui.QPalette.Text, QtGui.QColor(self.colors["text"]))
+        palette.setColor(QtGui.QPalette.Base, QtGui.QColor(self.colors["input"]))
+        palette.setColor(QtGui.QPalette.AlternateBase, QtGui.QColor(self.colors["overlay"]))
+        palette.setColor(QtGui.QPalette.ToolTipBase, QtGui.QColor(self.colors["surface"]))
+        palette.setColor(QtGui.QPalette.ToolTipText, QtGui.QColor(self.colors["text"]))
+        palette.setColor(QtGui.QPalette.Link, QtGui.QColor(self.colors["primary"]))
+        palette.setColor(QtGui.QPalette.LinkVisited, QtGui.QColor(self.colors["accent"]))
+        palette.setColor(QtGui.QPalette.Highlight, QtGui.QColor(self.colors["accent"]))
+        palette.setColor(QtGui.QPalette.HighlightedText, QtGui.QColor(self.colors["bg"]))
+        self.setPalette(palette)
 
-        # Setup UI
-        self._setup_ui()
+        self._selected_sds_folder: Path | None = None
 
-        # Initialize window manager for sizing, positioning, and state management
-        self.window_manager = create_window_manager(self, self.settings)
+        self._build_ui()
+        self._refresh_rag_stats()
+        self._refresh_sources_table()
+        self._refresh_db_stats()
+        self._on_refresh_records()
+        self._on_refresh_review()
 
-        # Prevent maximized state and handle window events (disabled auto-resize per user request)
-        # self.bind("<Configure>", self._on_window_configure)
+    # === UI construction ===
 
-        # Close handler
-        self.protocol("WM_DELETE_WINDOW", self._on_close)
+    def _build_ui(self) -> None:
+        central = QtWidgets.QWidget()
+        layout = QtWidgets.QVBoxLayout(central)
+        layout.setContentsMargins(12, 12, 12, 12)
+        layout.setSpacing(8)
 
-        logger.info(
-            "Startup ready: DuckDB=%.0fms, Ollama=%.0fms, Core=%.0fms",
-            t_db,
-            t_ol,
-            t_rest,
+        header_row = QtWidgets.QHBoxLayout()
+        header_row.setSpacing(6)
+
+        header = QtWidgets.QLabel(get_text("app.title"))
+        header.setStyleSheet(
+            f"color: {self.colors['text']}; font-size: 18px; font-weight: 700;"
         )
-        logger.info("Application initialized")
+        header_row.addWidget(header)
+        header_row.addStretch()
 
-        # Install Tkinter callback error hook for better diagnostics
-        self._install_tk_error_hook()
-        # Final layout stabilization: clamp size, release grabs
-        self.after(250, self._finalize_layout)
-
-    def _on_window_configure(self, event=None) -> None:
-        """Disabled: originally handled window configuration events.
-
-        Left as no-op to satisfy existing references without resizing the window.
-        """
-        return
-
-    # === Diagnostics & Recovery ===
-    def _install_tk_error_hook(self) -> None:
-        """Capture Tkinter callback exceptions into structured logs."""
-        try:
-            import traceback
-            
-            def _hook(exc, val, tb):  # type: ignore[override]
-                logger.error("Tkinter callback error: %s", val)
-                try:
-                    trace = ''.join(traceback.format_exception(exc, val, tb))
-                    logger.debug("Tkinter traceback:\n%s", trace)
-                except Exception:
-                    pass
-            self.report_callback_exception = _hook  # type: ignore[attr-defined]
-        except Exception:
-            pass
-
-    def _release_all_grabs(self) -> None:
-        """Release any stuck grabs from modal dialogs to restore interaction."""
-        try:
-            for w in self.winfo_children():
-                try:
-                    w.grab_release()
-                except Exception:
-                    pass
-        except Exception:
-            pass
-
-    def _finalize_layout(self) -> None:  # pragma: no cover - UI behavior
-        """Clamp window size to screen, ensure no stuck modal grabs."""
-        try:
-            self._release_all_grabs()
-            screen_w = self.winfo_screenwidth()
-            screen_h = self.winfo_screenheight()
-            cur_w = max(1, self.winfo_width())
-            cur_h = max(1, self.winfo_height())
-            # Clamp to 90% if exceeding
-            max_w = int(screen_w * 0.9)
-            max_h = int(screen_h * 0.9)
-            new_w = min(cur_w, max_w)
-            new_h = min(cur_h, max_h)
-            # Center if we shrank
-            x = max(0, (screen_w - new_w) // 2)
-            y = max(0, (screen_h - new_h) // 2)
-            if (new_w, new_h) != (cur_w, cur_h):
-                self.geometry(f"{new_w}x{new_h}+{x}+{y}")
-                logger.info("Clamped window size to %dx%d (screen %dx%d)", new_w, new_h, screen_w, screen_h)
-        except Exception as exc:
-            logger.debug("Finalize layout failed: %s", exc)
-
-    # (Removed duplicate early resize handler; using unified implementation later.)
-
-    # === Styled Dialogs ===
-    def _show_dialog(self, title: str, message: str, *, level: str = "info") -> None:
-        """Show a styled dialog proportional to app window size.
-
-        Args:
-            title: Dialog title
-            message: Dialog body text
-            level: info|warning|error controls accent color
-        """
-        try:
-            win_w = max(self.winfo_width(), self.settings.ui.min_width)
-            win_h = max(self.winfo_height(), self.settings.ui.min_height)
-            dlg_w = int(win_w * 0.5)
-            dlg_h = int(win_h * 0.35)
-
-            accent_map = {
-                "info": self.colors.get("accent", "#6272a4"),
-                "warning": self.colors.get("warning", "#ffb86c"),
-                "error": self.colors.get("error", "#ff5555"),
-            }
-            accent = accent_map.get(level, self.colors.get("accent", "#6272a4"))
-
-            dlg = ctk.CTkToplevel(self)
-            dlg.title(title)
-            dlg.geometry(f"{dlg_w}x{dlg_h}")
-            dlg.configure(fg_color=self.colors["surface"])
-            dlg.transient(self)
-            dlg.grab_set()
-
-            # Header
-            header = ctk.CTkFrame(dlg, fg_color=accent, corner_radius=0)
-            header.pack(fill="x")
-            ctk.CTkLabel(
-                header,
-                text=title,
-                text_color=self.colors["header"],
-                font=("Segoe UI", 16, "bold"),
-            ).pack(padx=16, pady=10, anchor="w")
-
-            # Body
-            body = ctk.CTkTextbox(dlg, fg_color=self.colors["input"], text_color=self.colors["text"])
-            body.pack(fill="both", expand=True, padx=16, pady=12)
-            body.insert("1.0", message)
-            body.configure(state="disabled")
-
-            # Actions
-            actions = ctk.CTkFrame(dlg, fg_color="transparent")
-            actions.pack(fill="x", padx=16, pady=12)
-            ctk.CTkButton(
-                actions,
-                text="OK",
-                fg_color=accent,
-                text_color=self.colors["header"],
-                corner_radius=6,
-                font=self.button_font,
-                command=dlg.destroy,
-            ).pack(side="right")
-        except Exception:
-            # Fallback to native messagebox
-            if level == "warning":
-                messagebox.showwarning(title, message, parent=self)
-            elif level == "error":
-                messagebox.showerror(title, message, parent=self)
-            else:
-                messagebox.showinfo(title, message, parent=self)
-
-    def _show_info(self, title: str, message: str) -> None:
-        self._show_dialog(title, message, level="info")
-
-    def _show_warning(self, title: str, message: str) -> None:
-        self._show_dialog(title, message, level="warning")
-
-    def _center_window(self) -> None:
-        """Center the window using configured dimensions without further resizing."""
-        try:
-            # Get primary monitor dimensions (not combined screen width)
-            screen_w = self.winfo_screenwidth()
-            screen_h = self.winfo_screenheight()
-            target_w = int(self.settings.ui.window_width)
-            target_h = int(self.settings.ui.window_height)
-            
-            # Ensure window fits on single monitor
-            # If screen_w suggests multi-monitor, use reasonable single monitor width
-            if screen_w > 3000:  # Likely multi-monitor setup
-                screen_w = 1920  # Default to common single monitor width
-            if screen_h > 2000:
-                screen_h = 1080
-            
-            # Clamp window size to screen
-            target_w = min(target_w, screen_w - 40)
-            target_h = min(target_h, screen_h - 40)
-            
-            x = max(0, (screen_w - target_w) // 2)
-            # Ensure at least 20px from the top edge
-            y = max(20, (screen_h - target_h) // 2)
-            self.geometry(f"{target_w}x{target_h}+{x}+{y}")
-        except Exception:
-            pass
-
-    def _setup_ui(self) -> None:
-        """Setup main UI components."""
-        # Main scrollable container for vertical overflow support
-        self.main_frame = ctk.CTkScrollableFrame(
-            self,
-            fg_color="transparent",
-            corner_radius=0,
+        close_btn = QtWidgets.QPushButton("×")
+        close_btn.setFixedSize(28, 28)
+        close_btn.setToolTip("Exit")
+        close_btn.setCursor(QtGui.QCursor(QtCore.Qt.PointingHandCursor))
+        close_btn.setStyleSheet(
+            "QPushButton {"
+            f"background-color: {self.colors.get('error', '#dc2626')};"
+            "border: none;"
+            "border-radius: 6px;"
+            "color: white;"
+            "font-weight: 700;"
+            "font-size: 14px;"
+            "}"
+            "QPushButton:hover {"
+            f"background-color: {self.colors.get('warning', '#f59e0b')};"
+            "}"
         )
-        self.main_frame.pack(fill="both", expand=True, padx=8, pady=8)
-        self.enable_auto_scroll = True
+        close_btn.clicked.connect(self.close)
+        header_row.addWidget(close_btn)
 
-        # Header bar with title and Exit button
-        self._setup_header_bar()
+        layout.addLayout(header_row)
 
-        # Tab view
-        self.tab_view = ctk.CTkTabview(
-            self.main_frame,
-            fg_color=self.colors["bg"],
-            corner_radius=12,
-            segmented_button_fg_color=self.colors.get(
-                "tab_inactive", self.colors["surface"]
-            ),
-            segmented_button_selected_color=self.colors.get(
-                "tab_active", self.colors["accent"]
-            ),
-            segmented_button_selected_hover_color=self.colors.get(
-                "tab_hover", self.colors["button_hover"]
-            ),
-            text_color=self.colors["text"],
+        self.tabs = QtWidgets.QTabWidget()
+        layout.addWidget(self.tabs)
+
+        self.tabs.addTab(self._create_rag_tab(), "RAG")
+        self.tabs.addTab(self._create_sds_tab(), "SDS")
+        self.tabs.addTab(self._create_records_tab(), "Records")
+        self.tabs.addTab(self._create_review_tab(), "Review")
+        self.tabs.addTab(self._create_backup_tab(), "Backup")
+        self.tabs.addTab(self._create_status_tab(), "Status")
+        self.tabs.addTab(self._create_chat_tab(), "Chat")
+
+        self.status_bar = self.statusBar()
+        self.status_label = QtWidgets.QLabel(get_text("app.ready"))
+        self.status_bar.addWidget(self.status_label)
+
+        self.setCentralWidget(central)
+
+    def _create_rag_tab(self) -> QtWidgets.QWidget:
+        tab = QtWidgets.QWidget()
+        layout = QtWidgets.QVBoxLayout(tab)
+        layout.setSpacing(10)
+        layout.setContentsMargins(12, 12, 12, 12)
+
+        self.rag_stats_label = QtWidgets.QLabel("Knowledge base: --")
+        self._style_label(self.rag_stats_label)
+        layout.addWidget(self.rag_stats_label)
+
+        btn_row = QtWidgets.QHBoxLayout()
+        add_files_btn = QtWidgets.QPushButton("📁 Add Files")
+        self._style_button(add_files_btn)
+        add_files_btn.clicked.connect(self._on_ingest_files)
+        btn_row.addWidget(add_files_btn)
+
+        add_folder_btn = QtWidgets.QPushButton("📂 Add Folder")
+        self._style_button(add_folder_btn)
+        add_folder_btn.clicked.connect(self._on_ingest_folder)
+        btn_row.addWidget(add_folder_btn)
+
+        refresh_btn = QtWidgets.QPushButton("🔄 Refresh Sources")
+        self._style_button(refresh_btn)
+        refresh_btn.clicked.connect(self._refresh_sources_table)
+        btn_row.addWidget(refresh_btn)
+
+        btn_row.addStretch()
+        layout.addLayout(btn_row)
+
+        url_row = QtWidgets.QHBoxLayout()
+        self.url_input = QtWidgets.QLineEdit()
+        self.url_input.setPlaceholderText("https://example.com/safety-data-sheet")
+        self.url_input.setStyleSheet(
+            f"QLineEdit {{"
+            f"background-color: {self.colors['input']};"
+            f"color: {self.colors['text']};"
+            f"border: 1px solid {self.colors['overlay']};"
+            "border-radius: 4px;"
+            "padding: 6px;"
+            "}}"
         )
-        self.tab_view.pack(fill="both", expand=True)
+        url_row.addWidget(self.url_input)
+        ingest_url_btn = QtWidgets.QPushButton("🌐 Ingest URL")
+        self._style_button(ingest_url_btn)
+        ingest_url_btn.clicked.connect(self._on_ingest_url)
+        url_row.addWidget(ingest_url_btn)
+        layout.addLayout(url_row)
 
-        # Add tabs
-        self.tab_view.add(get_text("tab.rag"))
-        self.tab_view.add(get_text("tab.sources"))
-        self.tab_view.add(get_text("tab.sds"))
-        self.tab_view.add("Records")
-        self.tab_view.add("Review")
-        self.tab_view.add("Quality")
-        self.tab_view.add("Backup")
-        self.tab_view.add("Status")
-        self.tab_view.add("Chat")
+        self.sources_table = QtWidgets.QTableWidget(0, 4)
+        self.sources_table.setHorizontalHeaderLabels(["Timestamp", "Title", "Type", "Chunks"])
+        self.sources_table.horizontalHeader().setStretchLastSection(True)
+        self._style_table(self.sources_table)
+        layout.addWidget(self.sources_table)
 
-        # Center window once after UI is built (only if no saved state)
-        def center_if_needed():
-            if not getattr(self.window_manager, 'state_was_restored', False):
-                self._center_window()
-        
-        self.after(50, center_if_needed)
-        # Setup tab contents (placeholders for now)
-        self._setup_rag_tab()
-        self._setup_sources_tab()
-        self._setup_sds_tab()
-        self._setup_records_tab()
-        self._setup_review_tab()
-        self._setup_quality_tab()
-        self._setup_backup_tab()
-        self._setup_status_tab()
-        self._setup_chat_tab()
+        self.rag_log = QtWidgets.QTextEdit()
+        self.rag_log.setReadOnly(True)
+        self.rag_log.setPlaceholderText("Ingestion logs…")
+        self._style_textedit(self.rag_log)
+        layout.addWidget(self.rag_log)
 
-        # Status bar
-        self._setup_status_bar()
-        # Start tab change watchdog (polling) for SDS banner refresh
-        self._last_tab_name = None
-        self.after(300, self._check_tab_change)
-        # Bind resize to adapt scaling for screen/window ratio
-        self._last_size = (self.winfo_width(), self.winfo_height())
-        self._last_scale_update = time.time()
-        # Debounce handle id for resize events
-        self._resize_after_id: int | None = None
-        self._pending_resize_dims: tuple[int, int] | None = None
-        # Enable automatic window resizing behavior (responsive scaling)
-        self.bind("<Configure>", self._on_window_resize)
+        return tab
 
-    def _check_tab_change(self) -> None:
-        """Poll for tab selection changes and refresh SDS banner when needed."""
-        try:
-            current = self.tab_view.get()
-            if current != getattr(self, "_last_tab_name", None):
-                self._last_tab_name = current
-                if current == get_text("tab.sds") and hasattr(self, "sds_tab"):
-                    try:
-                        self.sds_tab.refresh_vs_status()
-                    except Exception:
-                        pass
-        finally:
-            # keep polling
-            self.after(300, self._check_tab_change)
+    def _create_sds_tab(self) -> QtWidgets.QWidget:
+        tab = QtWidgets.QWidget()
+        layout = QtWidgets.QVBoxLayout(tab)
+        layout.setSpacing(10)
+        layout.setContentsMargins(12, 12, 12, 12)
 
-    def _apply_ui_scaling(
-        self,
-        initial: bool = False,
-        *,
-        width: int | None = None,
-        height: int | None = None,
-    ) -> None:
-        """Apply CustomTkinter scaling based on screen/window size ratio.
+        folder_row = QtWidgets.QHBoxLayout()
+        self.folder_label = QtWidgets.QLabel("No folder selected")
+        self._style_label(self.folder_label)
+        folder_row.addWidget(self.folder_label)
 
-        This adjusts both widget sizes and text for better fit across resolutions.
-        """
-        try:
-            # Safety: allow disabling all dynamic scaling
-            if getattr(self.settings.ui, "disable_scaling", False):
-                if initial:
-                    logger.info("UI scaling disabled via settings")
-                return
-            screen_w = self.winfo_screenwidth()
-            screen_h = self.winfo_screenheight()
-            # Prefer provided width/height (e.g., current window), else screen-based
-            target_w = width or int(screen_w * 0.85)
-            target_h = height or int(screen_h * 0.85)
+        select_btn = QtWidgets.QPushButton("📂 Select Folder")
+        self._style_button(select_btn)
+        select_btn.clicked.connect(self._on_select_folder)
+        folder_row.addWidget(select_btn)
 
-            # Base reference size (tuned for comfortable default)
-            base_w, base_h = 1400, 800
+        folder_row.addStretch()
+        layout.addLayout(folder_row)
 
-            # Mode override mapping (fixed scales)
-            mode = (self.settings.ui.scale_mode or "auto").lower()
-            fixed_map = {
-                "compact": 0.90,
-                "comfortable": 1.00,
-                "large": 1.25,
-            }
-
-            if mode != "auto" and mode in fixed_map:
-                scale = fixed_map[mode]
-            else:
-                scale = min(target_w / base_w, target_h / base_h)
-                # Clamp to range from settings (wider defaults)
-                smin = float(getattr(self.settings.ui, "scale_min", 0.75) or 0.75)
-                # Force stricter upper bound to avoid giant UI exceeding screen
-                smax = min(1.40, float(getattr(self.settings.ui, "scale_max", 1.75) or 1.75))
-                if smin > smax:
-                    smin, smax = smax, smin
-                scale = max(smin, min(scale, smax))
-
-            # Apply global scaling
-            ctk.set_widget_scaling(scale)
-            ctk.set_window_scaling(scale)
-            try:
-                # Ensure native Tk dialogs (file pickers, message boxes) follow the same scaling
-                self.tk.call("tk", "scaling", scale)
-            except Exception:
-                pass
-
-            # Update commonly used font sizes for new widgets created afterwards
-            def _sz(base: int) -> int:
-                return max(10, int(round(base * scale)))
-
-            self.button_font = ("Segoe UI", _sz(12), "bold")
-            self.button_font_sm = ("Segoe UI", _sz(11), "bold")
-
-            if initial:
-                logger.info(
-                    "UI scaling applied: %.2fx (mode=%s)", scale, mode or "auto"
-                )
-        except Exception as exc:
-            logger.debug("Failed to apply UI scaling: %s", exc)
-
-    def _on_window_resize(self, event) -> None:
-        """Debounced resize handler: schedules scaling after user stops resizing."""
-        try:
-            if event.widget is not self:
-                return
-            w, h = event.width, event.height
-            # Ignore spurious events with zero dimensions
-            if w <= 1 or h <= 1:
-                return
-            self._pending_resize_dims = (w, h)
-            # Cancel previous scheduled resize
-            if self._resize_after_id is not None:
-                try:
-                    self.after_cancel(self._resize_after_id)
-                except Exception:
-                    pass
-            # Schedule apply after short idle (user finished dragging)
-            debounce_ms = int(getattr(self.settings.ui, "resize_debounce_ms", 300) or 300)
-            self._resize_after_id = self.after(debounce_ms, self._apply_debounced_resize)
-        except Exception:
-            pass
-
-    def _apply_debounced_resize(self) -> None:
-        """Apply UI scaling from the last recorded dimensions (debounced)."""
-        dims = getattr(self, "_pending_resize_dims", None)
-        if not dims:
-            return
-        try:
-            w, h = dims
-            prev_w, prev_h = getattr(self, "_last_size", (w, h))
-            # Only apply if changed meaningfully (>=10px either dimension)
-            if abs(w - prev_w) < 10 and abs(h - prev_h) < 10:
-                return
-            self._apply_ui_scaling(initial=False, width=w, height=h)
-            # Ensure vertical expansion across all tabs and containers
-            self._apply_vertical_layout(window_width=w, window_height=h)
-            self._last_size = (w, h)
-            self._last_scale_update = time.time()
-        except Exception:
-            pass
-        finally:
-            self._resize_after_id = None
-
-    def _apply_vertical_layout(self, *, window_width: int | None = None, window_height: int | None = None) -> None:
-        """Adjust container heights so tabs expand vertically on resize."""
-        try:
-            self.update_idletasks()
-            h = window_height or self.winfo_height()
-            # Estimate header and status bar heights
-            header_h = getattr(self.header_bar, 'winfo_height', lambda: 40)()
-            status_h = getattr(self.status_bar, 'winfo_height', lambda: 32)()
-            padding = 16  # main_frame top/bottom padding total
-            available_h = max(self.settings.ui.min_height, h - header_h - status_h - padding)
-
-            # Main scrollable frame gets available height
-            try:
-                self.main_frame.configure(height=available_h)
-            except Exception:
-                pass
-
-            # Tab view height
-            try:
-                self.tab_view.configure(height=available_h - 8)
-            except Exception:
-                pass
-
-            # Ensure each tab content expands fully
-            for tab_name in [
-                get_text("tab.rag"),
-                get_text("tab.sources"),
-                get_text("tab.sds"),
-                "Records",
-                "Review",
-                "Quality",
-                "Backup",
-                "Status",
-                "Chat",
-            ]:
-                try:
-                    tab = self.tab_view.tab(tab_name)
-                    if tab:
-                        tab.update_idletasks()
-                        # Re-pack children to fill and expand
-                        for child in tab.winfo_children():
-                            try:
-                                child.pack_configure(fill="both", expand=True)
-                            except Exception:
-                                pass
-                except Exception:
-                    continue
-        except Exception:
-            pass
-
-    def _setup_header_bar(self) -> None:
-        """Top header with app title and close button."""
-        self.header_bar = ctk.CTkFrame(
-            self.main_frame,
-            fg_color=self.colors["header"],
-            height=40,
-            corner_radius=6,
+        controls = QtWidgets.QHBoxLayout()
+        self.use_rag_checkbox = QtWidgets.QCheckBox("Use RAG enrichment")
+        self.use_rag_checkbox.setChecked(True)
+        self.use_rag_checkbox.setStyleSheet(
+            f"QCheckBox {{"
+            f"color: {self.colors['text']};"
+            "}}"
         )
-        self.header_bar.pack(fill="x", side="top", pady=(0, 8))
+        controls.addWidget(self.use_rag_checkbox)
 
-        title_label = ctk.CTkLabel(
-            self.header_bar,
-            text=get_text("app.title"),
-            font=("Segoe UI", 14, "bold"),
-            text_color=self.colors["text"],
+        process_btn = QtWidgets.QPushButton("⚙️ Process SDS")
+        self._style_button(process_btn)
+        process_btn.clicked.connect(self._on_process_sds)
+        controls.addWidget(process_btn)
+
+        matrix_btn = QtWidgets.QPushButton("📊 Build Matrix")
+        self._style_button(matrix_btn)
+        matrix_btn.clicked.connect(self._on_build_matrix)
+        controls.addWidget(matrix_btn)
+
+        export_btn = QtWidgets.QPushButton("💾 Export")
+        self._style_button(export_btn)
+        export_btn.clicked.connect(self._on_export)
+        controls.addWidget(export_btn)
+
+        controls.addStretch()
+        layout.addLayout(controls)
+
+        self.sds_progress = QtWidgets.QProgressBar()
+        self.sds_progress.setStyleSheet(
+            f"QProgressBar {{"
+            f"background-color: {self.colors['input']};"
+            f"border: 1px solid {self.colors['overlay']};"
+            "border-radius: 4px;"
+            "}}"
+            f"QProgressBar::chunk {{"
+            f"background-color: {self.colors['accent']};"
+            "}}"
         )
-        title_label.pack(side="left", padx=12, pady=6)
+        layout.addWidget(self.sds_progress)
 
-        # Close button (X) on the right
-        close_btn = ctk.CTkButton(
-            self.header_bar,
-            text="✕",
-            command=self._on_close,
-            fg_color="transparent",
-            hover_color=self.colors.get("error", "#d9534f"),
-            text_color=self.colors["text"],
-            corner_radius=4,
-            font=("Segoe UI", 16, "bold"),
-            width=32,
-            height=32,
+        self.sds_table = QtWidgets.QTableWidget(0, 3)
+        self.sds_table.setHorizontalHeaderLabels(["File", "Chemical", "Status"])
+        self.sds_table.horizontalHeader().setStretchLastSection(True)
+        self._style_table(self.sds_table)
+        layout.addWidget(self.sds_table)
+
+        return tab
+
+    def _create_status_tab(self) -> QtWidgets.QWidget:
+        tab = QtWidgets.QWidget()
+        layout = QtWidgets.QVBoxLayout(tab)
+        layout.setSpacing(10)
+        layout.setContentsMargins(12, 12, 12, 12)
+
+        # Title
+        title = QtWidgets.QLabel("System Status")
+        self._style_label(title, bold=True)
+        title.setStyleSheet(title.styleSheet() + f"; font-size: 14px;")
+        layout.addWidget(title)
+
+        # Info section
+        info_frame = QtWidgets.QFrame()
+        info_frame.setStyleSheet(
+            f"QFrame {{"
+            f"background-color: {self.colors['surface']};"
+            f"border-radius: 6px;"
+            "padding: 12px;"
+            "}}"
         )
-        close_btn.pack(side="right", padx=8, pady=4)
+        info_layout = QtWidgets.QVBoxLayout(info_frame)
+        info_layout.setSpacing(8)
 
-    def _apply_responsive_geometry(self) -> None:
-        """Center window on screen with fixed size."""
-        try:
-            screen_w = self.winfo_screenwidth()
-            screen_h = self.winfo_screenheight()
+        self.status_stats_label = QtWidgets.QLabel("Stats unavailable")
+        self._style_label(self.status_stats_label)
+        self.status_stats_label.setWordWrap(True)
+        info_layout.addWidget(self.status_stats_label)
 
-            # Use configured size (no automatic sizing)
-            target_w = int(self.settings.ui.window_width)
-            target_h = int(self.settings.ui.window_height)
+        info_frame.setLayout(info_layout)
+        layout.addWidget(info_frame)
 
-            # Ensure window fits on single monitor
-            # If screen_w suggests multi-monitor, use reasonable single monitor width
-            if screen_w > 3000:  # Likely multi-monitor setup
-                screen_w = 1920  # Default to common single monitor width
-            if screen_h > 2000:
-                screen_h = 1080
-            
-            # Clamp window size to screen
-            target_w = min(target_w, screen_w - 40)
-            target_h = min(target_h, screen_h - 40)
+        # Button
+        refresh_btn = QtWidgets.QPushButton("🔄 Refresh Statistics")
+        self._style_button(refresh_btn)
+        refresh_btn.clicked.connect(self._refresh_db_stats)
+        layout.addWidget(refresh_btn)
 
-            # Center on screen
-            x = max(0, (screen_w - target_w) // 2)
-            # Ensure at least 20px from the top edge
-            y = max(20, (screen_h - target_h) // 2)
+        # Ollama status
+        ollama_title = QtWidgets.QLabel("Ollama Connection")
+        self._style_label(ollama_title, bold=True)
+        ollama_title.setStyleSheet(ollama_title.styleSheet() + f"; font-size: 12px;")
+        layout.addWidget(ollama_title)
 
-            self.geometry(f"{target_w}x{target_h}+{x}+{y}")
-        except Exception:
-            # Fallback to configured size
-            w = int(self.settings.ui.window_width)
-            h = int(self.settings.ui.window_height)
-            # Place fallback at least 20px from top
-            self.geometry(f"{w}x{h}+0+20")
+        self.ollama_status_label = QtWidgets.QLabel("Checking connection...")
+        self._style_label(self.ollama_status_label)
+        layout.addWidget(self.ollama_status_label)
 
-    def _setup_rag_tab(self) -> None:
-        """Setup RAG Knowledge Base tab."""
-        rag_tab_frame = self.tab_view.tab(get_text("tab.rag"))
-        self.rag_tab = RagTab(rag_tab_frame, app=self)
-        self.rag_tab.pack(fill="both", expand=True)
+        layout.addStretch()
+        return tab
 
-    def _setup_sources_tab(self) -> None:
-        """Setup the knowledge sources tab."""
-        sources_tab_frame = self.tab_view.tab(get_text("tab.sources"))
-        self.sources_tab = SourcesTab(sources_tab_frame, app=self)
-        self.sources_tab.pack(fill="both", expand=True)
+    def _create_records_tab(self) -> QtWidgets.QWidget:
+        tab = QtWidgets.QWidget()
+        layout = QtWidgets.QVBoxLayout(tab)
+        layout.setSpacing(10)
+        layout.setContentsMargins(12, 12, 12, 12)
 
-    def _setup_sds_tab(self) -> None:
-        """Setup SDS Processor tab."""
-        sds_tab_frame = self.tab_view.tab(get_text("tab.sds"))
-        self.sds_tab = SdsTab(sds_tab_frame, app=self)
-        self.sds_tab.pack(fill="both", expand=True)
+        controls = QtWidgets.QHBoxLayout()
+        limit_label = QtWidgets.QLabel("Limit:")
+        self._style_label(limit_label)
+        controls.addWidget(limit_label)
 
-    def _setup_records_tab(self) -> None:
-        """Setup Records Viewer tab."""
-        records_tab_frame = self.tab_view.tab("Records")
-        self.records_tab = RecordsTab(records_tab_frame, app=self)
-        self.records_tab.pack(fill="both", expand=True)
-
-    def _setup_review_tab(self) -> None:
-        """Setup Review tab."""
-        review_tab_frame = self.tab_view.tab("Review")
-        self.review_tab = ReviewTab(review_tab_frame, app=self)
-        self.review_tab.pack(fill="both", expand=True)
-
-    def _setup_quality_tab(self) -> None:
-        """Setup Quality Dashboard tab."""
-        from .tabs import QualityTab
-        quality_tab_frame = self.tab_view.tab("Quality")
-        self.quality_tab = QualityTab(quality_tab_frame, app=self)
-        self.quality_tab.pack(fill="both", expand=True)
-
-    def _setup_backup_tab(self) -> None:
-        """Setup Backup tab."""
-        backup_tab_frame = self.tab_view.tab("Backup")
-        self.backup_tab = BackupTab(backup_tab_frame, app=self)
-        self.backup_tab.pack(fill="both", expand=True)
-
-    def _setup_status_tab(self) -> None:
-        """Setup Status/Metrics tab."""
-        status_tab_frame = self.tab_view.tab("Status")
-        self.status_tab = StatusTab(status_tab_frame, app=self)
-        self.status_tab.pack(fill="both", expand=True)
-
-    def _setup_chat_tab(self) -> None:
-        """Setup Chat tab."""
-        chat_tab_frame = self.tab_view.tab("Chat")
-        self.chat_tab = ChatTab(chat_tab_frame, app=self)
-        self.chat_tab.pack(fill="both", expand=True)
-
-    def _setup_status_bar(self) -> None:
-        """Setup bottom status bar."""
-        self.status_bar = ctk.CTkFrame(
-            self.main_frame,
-            fg_color=self.colors["header"],
-            height=32,
-            corner_radius=0,
+        self.records_limit = QtWidgets.QSpinBox()
+        self.records_limit.setRange(10, 2000)
+        self.records_limit.setValue(100)
+        self.records_limit.setStyleSheet(
+            f"QSpinBox {{"
+            f"background-color: {self.colors['input']};"
+            f"color: {self.colors['text']};"
+            f"border: 1px solid {self.colors['overlay']};"
+            "border-radius: 4px;"
+            "padding: 4px;"
+            "}}"
         )
-        self.status_bar.pack(fill="x", side="bottom", pady=(8, 0))
+        controls.addWidget(self.records_limit)
 
-        # Status text
-        self.status_text = ctk.CTkLabel(
-            self.status_bar,
-            text=get_text("app.ready"),
-            font=("JetBrains Mono", 12),
-            text_color=self.colors["text"],
+        refresh = QtWidgets.QPushButton("🔄 Refresh")
+        self._style_button(refresh)
+        refresh.clicked.connect(self._on_refresh_records)
+        controls.addWidget(refresh)
+
+        controls.addStretch()
+        layout.addLayout(controls)
+
+        self.records_table = QtWidgets.QTableWidget(0, 7)
+        self.records_table.setHorizontalHeaderLabels(
+            ["File", "Status", "Product", "CAS", "Hazard", "Confidence", "Processed"]
         )
-        self.status_text.pack(side="left", padx=12, pady=6)
+        self.records_table.horizontalHeader().setStretchLastSection(True)
+        self._style_table(self.records_table)
+        layout.addWidget(self.records_table)
 
-        # Version
-        version_label = ctk.CTkLabel(
-            self.status_bar,
-            text=f"{get_text('app.version')} 1.0.0",
-            font=("JetBrains Mono", 11),
-            text_color=self.colors["subtext"],
+        self.records_info = QtWidgets.QLabel("Ready")
+        self._style_label(self.records_info, color=self.colors.get("subtext", "#888888"))
+        layout.addWidget(self.records_info)
+
+        return tab
+
+    def _create_review_tab(self) -> QtWidgets.QWidget:
+        tab = QtWidgets.QWidget()
+        layout = QtWidgets.QVBoxLayout(tab)
+        layout.setSpacing(10)
+        layout.setContentsMargins(12, 12, 12, 12)
+
+        info = QtWidgets.QLabel(
+            "Review processed documents and spot-check extracted fields. "
+            "Edits are not yet implemented in the Qt port."
         )
-        version_label.pack(side="right", padx=12, pady=6)
+        self._style_label(info, color=self.colors.get("subtext", "#888888"))
+        info.setWordWrap(True)
+        layout.addWidget(info)
 
-    def _update_status(self, message: str, level: str = "info") -> None:
-        """Update the status bar text and log the message."""
-        color_map = {
-            "error": self.colors.get("error", "#ff5555"),
-            "warning": self.colors.get("warning", "#f1fa8c"),
-            "success": self.colors.get("success", "#50fa7b"),
-            "info": self.colors.get("text", "#ffffff"),
-        }
+        self.review_table = QtWidgets.QTableWidget(0, 6)
+        self.review_table.setHorizontalHeaderLabels(
+            ["File", "Status", "Product", "CAS", "UN", "Hazard"]
+        )
+        self.review_table.horizontalHeader().setStretchLastSection(True)
+        self._style_table(self.review_table)
+        layout.addWidget(self.review_table)
 
-        try:
-            if hasattr(self, "status_text"):
-                color = color_map.get(level, self.colors.get("text", "#ffffff"))
-                self.status_text.configure(text=message, text_color=color)
-        except Exception as exc:
-            logger.debug("Failed to update status label: %s", exc)
+        refresh = QtWidgets.QPushButton("🔄 Refresh")
+        self._style_button(refresh)
+        refresh.clicked.connect(self._on_refresh_review)
+        layout.addWidget(refresh)
 
-        log_fn = {
-            "error": logger.error,
-            "warning": logger.warning,
-            "success": logger.info,
-            "info": logger.info,
-        }.get(level, logger.info)
+        return tab
+
+    def _create_backup_tab(self) -> QtWidgets.QWidget:
+        tab = QtWidgets.QWidget()
+        layout = QtWidgets.QVBoxLayout(tab)
+        layout.setSpacing(10)
+        layout.setContentsMargins(12, 12, 12, 12)
+
+        desc = QtWidgets.QLabel(
+            "Run the backup script to export RAG data (incompatibilities, hazards, documents)."
+        )
+        self._style_label(desc, color=self.colors.get("subtext", "#888888"))
+        desc.setWordWrap(True)
+        layout.addWidget(desc)
+
+        run_btn = QtWidgets.QPushButton("💾 Start Backup")
+        self._style_button(run_btn)
+        run_btn.clicked.connect(self._on_backup)
+        layout.addWidget(run_btn)
+
+        self.backup_log = QtWidgets.QTextEdit()
+        self.backup_log.setReadOnly(True)
+        self.backup_log.setPlaceholderText("Backup logs will appear here…")
+        self._style_textedit(self.backup_log)
+        layout.addWidget(self.backup_log)
+
+        return tab
+
+    def _create_chat_tab(self) -> QtWidgets.QWidget:
+        """Create the Chat tab for interacting with the Ollama LLM."""
+        tab = QtWidgets.QWidget()
+        layout = QtWidgets.QVBoxLayout(tab)
+        layout.setSpacing(10)
+        layout.setContentsMargins(12, 12, 12, 12)
+
+        # Title
+        title = QtWidgets.QLabel("Chat with RAG System")
+        self._style_label(title, bold=True)
+        title.setStyleSheet(title.styleSheet() + f"; font-size: 14px;")
+        layout.addWidget(title)
+
+        # Info
+        info = QtWidgets.QLabel(
+            "Ask questions about your knowledge base. The system uses RAG to retrieve "
+            "relevant documents and Ollama to generate responses."
+        )
+        self._style_label(info, color=self.colors.get("subtext", "#888888"))
+        info.setWordWrap(True)
+        layout.addWidget(info)
+
+        # Chat display
+        self.chat_display = QtWidgets.QTextEdit()
+        self.chat_display.setReadOnly(True)
+        self._style_textedit(self.chat_display)
+        layout.addWidget(self.chat_display)
+
+        # Input row
+        input_row = QtWidgets.QHBoxLayout()
+        self.chat_input = QtWidgets.QLineEdit()
+        self.chat_input.setPlaceholderText("Ask a question about your knowledge base...")
+        self.chat_input.setStyleSheet(
+            f"QLineEdit {{"
+            f"background-color: {self.colors['input']};"
+            f"color: {self.colors['text']};"
+            f"border: 1px solid {self.colors['overlay']};"
+            "border-radius: 4px;"
+            "padding: 8px;"
+            "}}"
+        )
+        input_row.addWidget(self.chat_input)
+
+        send_btn = QtWidgets.QPushButton("Send")
+        self._style_button(send_btn)
+        send_btn.clicked.connect(self._on_chat_send)
+        input_row.addWidget(send_btn)
+
+        layout.addLayout(input_row)
+
+        return tab
+
+    def _create_placeholder_tab(self, text: str) -> QtWidgets.QWidget:
+        """Create a placeholder tab for future functionality."""
+        tab = QtWidgets.QWidget()
+        layout = QtWidgets.QVBoxLayout(tab)
+        layout.setContentsMargins(12, 12, 12, 12)
+
+        title = QtWidgets.QLabel(text)
+        self._style_label(title, bold=True)
+        title.setStyleSheet(title.styleSheet() + f"; font-size: 14px;")
+        layout.addWidget(title)
+
+        label = QtWidgets.QLabel(f"{text} tab will be ported in a future update.")
+        self._style_label(label, color=self.colors.get("subtext", "#888888"))
+        layout.addWidget(label)
+
+        layout.addStretch()
+        return tab
+
+    # === Styling ===
+
+    def _style_label(self, label: QtWidgets.QLabel, bold: bool = False, color: str | None = None) -> None:
+        """Apply consistent styling to a label."""
+        c = color or self.colors["text"]
+        weight = "font-weight: 700;" if bold else ""
+        label.setStyleSheet(f"color: {c}; {weight}")
+
+    def _style_button(self, button: QtWidgets.QPushButton) -> None:
+        """Apply consistent styling to a button."""
+        button.setStyleSheet(
+            "QPushButton {"
+            f"background-color: {self.colors['primary']};"
+            "border: none;"
+            "border-radius: 4px;"
+            f"color: {self.colors['text']};"
+            "padding: 6px 12px;"
+            "font-weight: 500;"
+            "}"
+            "QPushButton:hover {"
+            f"background-color: {self.colors['button_hover']};"
+            "}"
+            "QPushButton:pressed {"
+            f"background-color: {self.colors['accent']};"
+            "}"
+        )
+
+    def _style_table(self, table: QtWidgets.QTableWidget) -> None:
+        """Apply consistent styling to a table."""
+        table.setStyleSheet(
+            f"QTableWidget {{"
+            f"background-color: {self.colors['input']};"
+            f"color: {self.colors['text']};"
+            f"gridline-color: {self.colors['overlay']};"
+            "}}"
+            f"QHeaderView::section {{"
+            f"background-color: {self.colors['header']};"
+            f"color: {self.colors['text']};"
+            "padding: 4px;"
+            "border: none;"
+            "}}"
+            f"QTableWidget::item:selected {{"
+            f"background-color: {self.colors['accent']};"
+            f"color: {self.colors['bg']};"
+            "}}"
+        )
+        table.verticalHeader().setStyleSheet(
+            f"QHeaderView {{"
+            f"background-color: {self.colors['header']};"
+            f"color: {self.colors['text']};"
+            "}}"
+        )
+
+    def _style_textedit(self, textedit: QtWidgets.QTextEdit) -> None:
+        """Apply consistent styling to a text edit."""
+        textedit.setStyleSheet(
+            f"QTextEdit {{"
+            f"background-color: {self.colors['input']};"
+            f"color: {self.colors['text']};"
+            "border: 1px solid {self.colors['overlay']};"
+            "border-radius: 4px;"
+            "padding: 4px;"
+            "}}"
+        )
+
+    # === Helpers ===
+
+    def _set_status(self, message: str, *, error: bool = False) -> None:
+        color = self.colors.get("error" if error else "text", "#ffffff")
+        self.status_label.setStyleSheet(f"color: {color};")
+        self.status_label.setText(message)
+        log_fn = logger.error if error else logger.info
         log_fn(message)
 
-    # === Event Handlers ===
+    def _system_prefers_dark(self) -> bool:
+        """Heuristic to follow OS theme based on palette brightness."""
+        try:
+            palette = QtWidgets.QApplication.instance().palette()
+            window_color = palette.color(QtGui.QPalette.Window)
+            # lightness: 0 (dark) .. 255 (light)
+            return window_color.lightness() < 128
+        except Exception:
+            return False
 
-    # === Knowledge Source Events ===
+    def _start_task(self, fn: Callable, *args, on_result: Callable | None = None) -> None:
+        worker = TaskRunner(fn, *args)
+        self._workers.append(worker)
 
-    def _on_ingest_local_files(self) -> None:
-        """Prompt user for files and ingest them into the knowledge base."""
-        files = filedialog.askopenfilenames(
-            title="Select knowledge files",
-            parent=self,
-            filetypes=[
-                (
-                    "Supported files",
-                    " ".join(f"*{ext}" for ext in SUPPORTED_FORMATS.keys()),
-                )
-            ],
+        worker.signals.message.connect(self._set_status)
+        worker.signals.error.connect(lambda msg, w=worker: self._on_worker_error(msg, w))
+        if on_result:
+            worker.signals.finished.connect(lambda result, w=worker: self._on_worker_finished(w, on_result, result))
+        else:
+            worker.signals.finished.connect(lambda result, w=worker: self._on_worker_finished(w, None, result))
+
+        self.thread_pool.start(worker)
+
+    def _on_worker_error(self, message: str, worker: TaskRunner) -> None:
+        self._set_status(message, error=True)
+        self._cleanup_worker(worker)
+
+    def _on_worker_finished(self, worker: TaskRunner, callback: Callable | None, result: object) -> None:
+        if callback:
+            callback(result)
+        self._cleanup_worker(worker)
+
+    def _cleanup_worker(self, worker: TaskRunner) -> None:
+        try:
+            self._workers.remove(worker)
+        except ValueError:
+            pass
+
+    # === RAG ingestion ===
+
+    def _on_ingest_files(self) -> None:
+        files, _ = QtWidgets.QFileDialog.getOpenFileNames(
+            self,
+            "Select knowledge files",
+            str(self.settings.paths.input_dir),
+            "Supported files (" + " ".join(f"*{ext}" for ext in SUPPORTED_FORMATS) + ")",
         )
         if files:
-            self.sources_status_var.set(f"Ingesting {len(files)} files...")
-            thread = threading.Thread(target=self._ingest_files_async, args=(files,))
-            thread.daemon = True
-            thread.start()
+            self._set_status(f"Ingesting {len(files)} files…")
+            self._start_task(self._ingest_files_task, [Path(f) for f in files], on_result=self._on_ingest_done)
 
-    def _on_ingest_local_folder(self) -> None:
-        """Ingest all supported files from a folder."""
-        folder = filedialog.askdirectory(
-            title="Select folder with knowledge files", parent=self
-        )
+    def _on_ingest_folder(self) -> None:
+        folder = QtWidgets.QFileDialog.getExistingDirectory(self, "Select folder", str(self.settings.paths.input_dir))
         if not folder:
             return
-
         folder_path = Path(folder)
         files: list[Path] = []
-        for suffix in SUPPORTED_FORMATS.keys():
+        for suffix in SUPPORTED_FORMATS:
             files.extend(folder_path.rglob(f"*{suffix}"))
-
         if not files:
-            messagebox.showinfo(
-                "No Files", "No supported files found in the selected folder."
-            )
+            QtWidgets.QMessageBox.information(self, "No files", "No supported files found.")
             return
+        self._set_status(f"Ingesting {len(files)} files from folder…")
+        self._start_task(self._ingest_files_task, files, on_result=self._on_ingest_done)
 
-        self.sources_status_var.set(f"Ingesting {len(files)} files from folder...")
-        thread = threading.Thread(
-            target=self._ingest_files_async, args=(tuple(str(f) for f in files),)
-        )
-        thread.daemon = True
-        thread.start()
-
-    def _on_ingest_snapshot_file(self) -> None:
-        """Ingest a Bright Data snapshot file."""
-        file_path = filedialog.askopenfilename(
-            title="Select Bright Data snapshot",
-            parent=self,
-            filetypes=[("Snapshot files", "*.json *.txt"), ("All files", "*.*")],
-        )
-        if file_path:
-            self.sources_status_var.set("Loading snapshot...")
-            thread = threading.Thread(
-                target=self._ingest_snapshot_async, args=(file_path,)
-            )
-            thread.daemon = True
-            thread.start()
-
-    def _on_sources_add_url(self) -> None:
-        """Handle ingestion of a URL from the sources tab."""
-        url = self.sources_url_entry.get().strip()
+    def _on_ingest_url(self) -> None:
+        url = self.url_input.text().strip()
         if not url:
-            messagebox.showwarning("Missing URL", "Enter a URL to fetch.")
+            QtWidgets.QMessageBox.warning(self, "Missing URL", "Enter a URL to ingest.")
             return
+        self._set_status(f"Fetching {url}…")
+        self._start_task(self._ingest_url_task, url, on_result=self._on_ingest_done)
 
-        self.sources_status_var.set(f"Fetching {url}...")
-        thread = threading.Thread(target=self._sources_add_url_async, args=(url,))
-        thread.daemon = True
-        thread.start()
+    def _ingest_files_task(self, files: Iterable[Path], *, signals: WorkerSignals | None = None) -> IngestionSummary:
+        summary = self.ingestion.ingest_local_files(files)
+        if signals:
+            signals.message.emit(summary.to_message())
+        return summary
 
-    def _on_sources_search(self) -> None:
-        """Handle Google search ingestion."""
-        query = self.sources_search_entry.get().strip()
-        if not query:
-            messagebox.showwarning("Missing Query", "Enter a search query.")
-            return
-
-        if not self.ingestion.search_client:
-            messagebox.showwarning(
-                "Search Not Configured",
-                "Set GOOGLE_API_KEY and GOOGLE_CSE_ID in your .env file to enable Google search ingestion.",
-            )
-            return
-
-        try:
-            max_results = int(self.sources_search_results_entry.get().strip() or "5")
-        except ValueError:
-            max_results = 5
-
-        self.sources_status_var.set(f"Searching for '{query}'...")
-        thread = threading.Thread(
-            target=self._sources_search_async, args=(query, max_results)
-        )
-        thread.daemon = True
-        thread.start()
-
-    def _on_simple_urls(self) -> None:
-        """Handle batch simple URL ingestion."""
-        urls = [
-            line.strip()
-            for line in self.simple_urls_text.get("1.0", END).splitlines()
-            if line.strip()
-        ]
-        if not urls:
-            messagebox.showwarning("No URLs", "Enter one or more URLs.")
-            return
-        self.sources_status_var.set(f"Fetching {len(urls)} URLs...")
-        thread = threading.Thread(target=self._simple_urls_async, args=(urls,))
-        thread.daemon = True
-        thread.start()
-
-    def _on_bright_trigger(self) -> None:
-        """Handle Bright Data crawl trigger."""
-        if not (
-            self.settings.ingestion.brightdata_api_key
-            and self.settings.ingestion.brightdata_dataset_id
-        ):
-            messagebox.showwarning(
-                "Bright Data Not Configured",
-                "Set BRIGHTDATA_API_KEY and BRIGHTDATA_DATASET_ID in .env to trigger a crawl.",
-            )
-            return
-        try:
-            keywords = self._parse_bright_keywords()
-        except ValueError as exc:
-            messagebox.showwarning("Invalid Keywords", str(exc))
-            return
-
-        if not keywords:
-            messagebox.showwarning("No Keywords", "Enter at least one keyword.")
-            return
-
-        self.sources_status_var.set("Triggering Bright Data crawl...")
-        thread = threading.Thread(target=self._bright_trigger_async, args=(keywords,))
-        thread.daemon = True
-        thread.start()
-
-    def _on_bright_check(self) -> None:
-        """Check Bright Data snapshot status."""
-        if not (
-            self.settings.ingestion.brightdata_api_key
-            and self.settings.ingestion.brightdata_dataset_id
-        ):
-            messagebox.showwarning(
-                "Bright Data Not Configured",
-                "Set BRIGHTDATA_API_KEY and BRIGHTDATA_DATASET_ID in .env to check snapshot status.",
-            )
-            return
-        self.sources_status_var.set("Checking snapshot status...")
-        thread = threading.Thread(target=self._bright_check_async)
-        thread.daemon = True
-        thread.start()
-
-    def _on_bright_download(self) -> None:
-        """Download latest snapshot and ingest."""
-        if not (
-            self.settings.ingestion.brightdata_api_key
-            and self.settings.ingestion.brightdata_dataset_id
-        ):
-            messagebox.showwarning(
-                "Bright Data Not Configured",
-                "Set BRIGHTDATA_API_KEY and BRIGHTDATA_DATASET_ID in .env to download snapshots.",
-            )
-            return
-        self.sources_status_var.set("Downloading snapshot...")
-        thread = threading.Thread(target=self._bright_download_async)
-        thread.daemon = True
-        thread.start()
-
-    # === Knowledge ingestion workers ===
-    def _ingest_files_async(self, files: tuple[str, ...]) -> None:
-        summary = self.ingestion.ingest_local_files([Path(f) for f in files])
-        self.after(0, lambda: self._handle_ingestion_summary(summary))
-
-    def _ingest_snapshot_async(self, file_path: str) -> None:
-        summary = self.ingestion.ingest_snapshot_file(Path(file_path))
-        self.after(0, lambda: self._handle_ingestion_summary(summary))
-
-    def _sources_add_url_async(self, url: str) -> None:
+    def _ingest_url_task(self, url: str, *, signals: WorkerSignals | None = None) -> IngestionSummary:
         summary = self.ingestion.ingest_url(url)
-        self.after(0, lambda: self._handle_ingestion_summary(summary))
+        if signals:
+            signals.message.emit(summary.to_message())
+        return summary
 
-    def _sources_search_async(self, query: str, max_results: int) -> None:
-        summary = self.ingestion.ingest_web_search(query, max_results=max_results)
-        self.after(0, lambda: self._handle_ingestion_summary(summary))
-
-    def _simple_urls_async(self, urls: list[str]) -> None:
-        summary = self.ingestion.ingest_simple_urls(urls)
-        self.after(0, lambda: self._handle_ingestion_summary(summary))
-
-    def _bright_trigger_async(self, keywords: list[tuple[str, int]]) -> None:
-        try:
-            snapshot_id = self.ingestion.trigger_brightdata_keywords(keywords)
-            msg = f"Bright Data snapshot triggered: {snapshot_id}"
-            self.after(0, lambda: self.sources_status_var.set(msg))
-            self.after(0, lambda: messagebox.showinfo("Snapshot Triggered", msg))
-            self.after(0, self._update_snapshot_label)
-        except Exception as exc:
-            logger.error("Bright Data trigger failed: %s", exc)
-            err = str(exc)
-            self.after(0, lambda: self.sources_status_var.set(err))
-            self.after(0, lambda e=err: messagebox.showerror("Bright Data Error", e))
-
-    def _bright_check_async(self) -> None:
-        try:
-            status = self.ingestion.check_brightdata_status()
-            msg = f"Snapshot status: {status.get('status')}"
-            self.after(0, lambda: self.sources_status_var.set(msg))
-            detail = json.dumps(status, indent=2, ensure_ascii=False)
-            self.after(0, lambda: messagebox.showinfo("Snapshot Status", detail))
-        except Exception as exc:
-            logger.error("Bright Data status check failed: %s", exc)
-            err = str(exc)
-            self.after(0, lambda: self.sources_status_var.set(err))
-            self.after(0, lambda e=err: messagebox.showerror("Bright Data Error", e))
-
-    def _bright_download_async(self) -> None:
-        try:
-            summary = self.ingestion.download_and_ingest_snapshot()
-            self.after(0, lambda: self._handle_ingestion_summary(summary))
-            self.after(0, self._update_snapshot_label)
-        except Exception as exc:
-            logger.error("Bright Data download failed: %s", exc)
-            err = str(exc)
-            self.after(0, lambda: self.sources_status_var.set(err))
-            self.after(0, lambda e=err: messagebox.showerror("Bright Data Error", e))
-
-    # Craw4AI handlers removed (feature deprecated)
-
-    def _parse_bright_keywords(self) -> list[tuple[str, int]]:
-        """Parse the keywords textbox into (keyword, pages) tuples."""
-        text = self.bright_keywords_text.get("1.0", END).strip()
-        default_pages = self._get_default_pages()
-        keywords: list[tuple[str, int]] = []
-        for line in text.splitlines():
-            cleaned = line.strip()
-            if not cleaned:
-                continue
-            if ":" in cleaned:
-                keyword, pages_str = cleaned.split(":", 1)
-                try:
-                    pages = max(1, int(pages_str.strip()))
-                except ValueError:
-                    raise ValueError(f"Invalid page count in '{cleaned}'")
-                keywords.append((keyword.strip(), pages))
-            else:
-                keywords.append((cleaned, default_pages))
-        return keywords
-
-    def _get_default_pages(self) -> int:
-        try:
-            return max(1, int(self.bright_pages_entry.get().strip() or "1"))
-        except (ValueError, AttributeError):
-            return 1
-
-    def _handle_ingestion_summary(self, summary: IngestionSummary) -> None:
-        """Update UI after an ingestion completes."""
-        msg = summary.to_message()
-        self.status_text.configure(text=msg)
-        self.sources_status_var.set(msg)
-
-        details = msg
-        if summary.errors:
-            details += "\nErrors:\n- " + "\n- ".join(summary.errors)
-        if summary.skipped:
-            details += "\nSkipped:\n- " + "\n- ".join(summary.skipped[:5])
-
-        messagebox.showinfo("Ingestion Complete", details)
+    def _on_ingest_done(self, result: object) -> None:
+        if isinstance(result, IngestionSummary):
+            self.rag_log.append(result.to_message())
+        self._refresh_sources_table()
         self._refresh_rag_stats()
-        self._refresh_sources_list()
-
-    def _on_select_folder(self) -> None:
-        """Handle select folder button."""
-        folder = filedialog.askdirectory(title="Select SDS folder", parent=self)
-        if folder:
-            logger.info("Selected folder: %s", folder)
-            self.selected_sds_folder = folder
-            # Reset any previous manual selections
-            self.selected_sds_files = []
-
-            # Scan and list SDS files
-            sds_files = list(Path(folder).rglob("*.pdf")) + list(
-                Path(folder).rglob("*.txt")
-            )
-            if not sds_files:
-                self.status_text.configure(text=f"No SDS files found in {folder}")
-                self.sds_progress_text.configure(text="No files to process")
-                return
-
-            file_count = len(sds_files)
-            self.status_text.configure(
-                text=f"Found {file_count} SDS files - Ready to process"
-            )
-            self.sds_progress_text.configure(text=f"Ready: {file_count} files")
-            self._reset_sds_file_table(sds_files)
-
-    def _on_choose_files(self) -> None:
-        """Open a dialog to choose which SDS files to process.
-
-        Provides Select All / Unselect All controls and individual checkboxes.
-        """
-        if not hasattr(self, "selected_sds_folder"):
-            messagebox.showwarning("No Folder Selected", "Please select a folder first")
-            return
-
-        folder_path = Path(self.selected_sds_folder)
-        sds_files = sorted(list(folder_path.rglob("*.pdf")) + list(folder_path.rglob("*.txt")))
-        if not sds_files:
-            messagebox.showinfo("No Files", "No SDS files found in the selected folder.")
-            return
-
-        # Create selection window
-        win = ctk.CTkToplevel(self)
-        win.title("Select SDS Files")
-        win.geometry("700x500")
-
-        # Top controls
-        ctrl_frame = ctk.CTkFrame(win, fg_color=self.colors["surface"])
-        ctrl_frame.pack(fill="x", padx=10, pady=(10, 0))
-
-        def select_all():
-            for var in checkbox_vars.values():
-                var.set(True)
-
-        def unselect_all():
-            for var in checkbox_vars.values():
-                var.set(False)
-
-        ctk.CTkButton(
-            ctrl_frame,
-            text="Select All",
-            fg_color=self.colors.get("success", "#50fa7b"),
-            text_color=self.colors["header"],
-            corner_radius=4,
-            font=self.button_font_sm,
-            command=select_all,
-        ).pack(side="left", padx=6, pady=6)
-
-        ctk.CTkButton(
-            ctrl_frame,
-            text="Unselect All",
-            fg_color=self.colors.get("error", "#ff5555"),
-            text_color=self.colors["header"],
-            corner_radius=4,
-            font=self.button_font_sm,
-            command=unselect_all,
-        ).pack(side="left", padx=6, pady=6)
-
-        # Scrollable list of checkboxes
-        scroll = ctk.CTkScrollableFrame(win, fg_color=self.colors["surface"], corner_radius=8)
-        scroll.pack(fill="both", expand=True, padx=10, pady=10)
-
-        checkbox_vars: dict[Path, ctk.BooleanVar] = {}
-        preselected_names = set(self.selected_sds_files) if hasattr(self, "selected_sds_files") else set()
-        for f in sds_files:
-            var = ctk.BooleanVar(value=(not preselected_names or (f.name in preselected_names)))
-            cb = ctk.CTkCheckBox(
-                scroll,
-                text=f.name,
-                variable=var,
-                text_color=self.colors["text"],
-                font=("JetBrains Mono", 12),
-            )
-            cb.pack(anchor="w", padx=8, pady=4)
-            checkbox_vars[f] = var
-
-        # Bottom buttons
-        btns = ctk.CTkFrame(win, fg_color="transparent")
-        btns.pack(fill="x", padx=10, pady=(0, 10))
-
-        def apply_selection():
-            selected = [f.name for f, v in checkbox_vars.items() if v.get()]
-            self.selected_sds_files = selected
-            # Reflect selection in table
-            self._reset_sds_file_table([folder_path / name for name in selected] if selected else sds_files)
-            self._update_status(f"Selected {len(selected) if selected else len(sds_files)} files", level="info")
-            win.destroy()
-
-        ctk.CTkButton(
-            btns,
-            text="Apply",
-            fg_color=self.colors.get("primary", "#6272a4"),
-            text_color=self.colors["header"],
-            corner_radius=4,
-            font=self.button_font,
-            command=apply_selection,
-        ).pack(side="left", padx=6, pady=6)
-
-        ctk.CTkButton(
-            btns,
-            text="Cancel",
-            fg_color=self.colors.get("surface", "#44475a"),
-            text_color=self.colors["header"],
-            corner_radius=4,
-            font=self.button_font,
-            command=win.destroy,
-        ).pack(side="left", padx=6, pady=6)
-
-    def _on_process(self) -> None:
-        """Handle process button."""
-        if not hasattr(self, "selected_sds_folder"):
-            self._show_warning("No Folder Selected", "Please select a folder first")
-            return
-
-        stats = self.db.get_statistics()
-        if stats.get("rag_chunks", 0) == 0:
-            self._show_warning(
-                "Knowledge Base Empty",
-                "Please ingest knowledge sources (files, URLs, or snapshots) before processing SDS files.",
-            )
-            return
-
-        logger.info("Starting SDS processing")
-        self.status_text.configure(text="Processing SDS documents...")
-        self.sds_progress.set(0)
-        self.sds_progress_text.configure(text="Processing (0%)")
-
-        # Start async processing in background thread
-        mode = getattr(self, "process_mode_var", None)
-        mode_val = mode.get() if mode else "standard"
-
-        if mode_val == "rag_script":
-            thread = threading.Thread(
-                target=self._process_sds_script_async, args=(self.selected_sds_folder,)
-            )
-        else:
-            use_rag = self.use_rag_var.get()
-            thread = threading.Thread(
-                target=self._process_sds_async, args=(self.selected_sds_folder, use_rag)
-            )
-
-        thread.daemon = True
-        thread.start()
-
-    def _reset_sds_file_table(self, sds_files: list[Path]) -> None:
-        """Prepare the SDS file status table with pending state."""
-        self.sds_file_rows = {f.name: ("Pending", "") for f in sds_files}
-        self._render_sds_file_table()
-
-    def _set_sds_file_status(self, filename: str, status: str, chemical_name: str = "") -> None:
-        """Update a single file status in the SDS table.
-
-        Args:
-            filename: Name of the file
-            status: Status string (Processing, Success, Failed, etc.)
-            chemical_name: Identified chemical name from the document
-        """
-        if not hasattr(self, "sds_file_rows"):
-            self.sds_file_rows = {}
-        # Keep existing chemical name if not provided
-        existing_name = self.sds_file_rows.get(filename, ("", ""))[1] if filename in self.sds_file_rows else ""
-        chemical_name = chemical_name or existing_name
-        self.sds_file_rows[filename] = (status, chemical_name)
-        self._render_sds_file_table()
-
-    def _render_sds_file_table(self) -> None:
-        """Render the SDS file status table in the UI."""
-        if not hasattr(self, "sds_files_table"):
-            return
-
-        try:
-            if not self.sds_file_rows:
-                if getattr(self.sds_files_table, "checkbox_column", False):
-                    self.sds_files_table.set_data(
-                        ["Sel", "Arquivo", "Composto Químico", "Status"],
-                        [["", "Nenhum arquivo", "", ""]]
-                    )
-                else:
-                    self.sds_files_table.set_data(
-                        ["Arquivo", "Composto Químico", "Status"],
-                        [("Nenhum arquivo", "", "")]
-                    )
-                return
-            if getattr(self.sds_files_table, "checkbox_column", False):
-                rows = [["", name, chemical_name, status] for name, (status, chemical_name) in self.sds_file_rows.items()]
-                self.sds_files_table.set_data(
-                    ["Sel", "Arquivo", "Composto Químico", "Status"], rows, accent_color=self.colors["accent"]
-                )
-            else:
-                rows = [(name, chemical_name, status) for name, (status, chemical_name) in self.sds_file_rows.items()]
-                self.sds_files_table.set_data(
-                    ["Arquivo", "Composto Químico", "Status"], rows, accent_color=self.colors["accent"]
-                )
-        except Exception as exc:  # pragma: no cover - UI best effort
-            logger.debug("Failed to render SDS file table: %s", exc)
-
-    def _process_sds_async(self, folder: str, use_rag: bool) -> None:
-        """Process SDS documents asynchronously.
-
-        Args:
-            folder: Path to SDS folder
-            use_rag: Whether to use RAG enrichment
-        """
-        from ..sds.processor import SDSProcessor
-
-        try:
-            self.after(
-                0, lambda: self.status_text.configure(text="Initializing processor...")
-            )
-
-            # Get SDS files
-            folder_path = Path(folder)
-            # Use selected files if present; otherwise include all in folder
-            if hasattr(self, "selected_sds_files") and self.selected_sds_files:
-                sds_files = [folder_path / name for name in self.selected_sds_files]
-            else:
-                sds_files = sorted(
-                    list(folder_path.rglob("*.pdf")) + list(folder_path.rglob("*.txt"))
-                )
-
-            if not sds_files:
-                error_msg = "No SDS files found in selected folder"
-                self.after(0, lambda: self.status_text.configure(text=error_msg))
-                self.after(0, lambda: self._show_warning("No Files", error_msg))
-                return
-
-            total_files = len(sds_files)
-            logger.info("Processing %d SDS files", total_files)
-
-            # Initialize processor
-            processor = SDSProcessor()
-
-            successful = 0
-            failed = 0
-            dangerous_count = 0
-
-            # Process each file
-            for i, file_path in enumerate(sds_files, 1):
-                try:
-                    # Update progress
-                    progress = (i - 1) / total_files
-                    status_text = f"Processing: {file_path.name} ({i}/{total_files})"
-                    progress_text = f"Processing ({int(progress * 100)}%)"
-
-                    self.after(0, lambda p=progress: self.sds_progress.set(p))
-                    self.after(
-                        0, lambda s=status_text: self.status_text.configure(text=s)
-                    )
-                    self.after(
-                        0,
-                        lambda p=progress_text: self.sds_progress_text.configure(
-                            text=p
-                        ),
-                    )
-                    self.after(
-                        0,
-                        lambda n=file_path.name: self._set_sds_file_status(
-                            n, "Processing"
-                        ),
-                    )
-
-                    # Process document
-                    result = processor.process(file_path, use_rag=use_rag)
-
-                    # Extract chemical name from extractions
-                    chemical_name = ""
-                    if result.extractions and "product_name" in result.extractions:
-                        product_info = result.extractions.get("product_name", {})
-                        chemical_name = product_info.get("value", "") or product_info.get("normalized_value", "")
-
-                    if result.status == "success":
-                        successful += 1
-                        if result.is_dangerous:
-                            dangerous_count += 1
-                        self.after(
-                            0,
-                            lambda n=file_path.name, c=chemical_name: self._set_sds_file_status(
-                                n, "Success", c
-                            ),
-                        )
-                    else:
-                        failed += 1
-                        self.after(
-                            0,
-                            lambda n=file_path.name, c=chemical_name: self._set_sds_file_status(
-                                n, "Failed", c
-                            ),
-                        )
-
-                    logger.info(
-                        "Processed %s: %s (confidence: %.0f%%)",
-                        file_path.name,
-                        result.status,
-                        result.avg_confidence * 100,
-                    )
-
-                except Exception as e:
-                    failed += 1
-                    self.after(
-                        0,
-                        lambda n=file_path.name: self._set_sds_file_status(n, "Failed"),
-                    )
-                    logger.error("Failed to process %s: %s", file_path.name, e)
-                    continue
-
-            # Final status
-            progress = 1.0
-            status_msg = f"Complete: {successful} successful, {failed} failed, {dangerous_count} dangerous"
-            progress_msg = "Complete (100%)"
-
-            self.after(0, lambda p=progress: self.sds_progress.set(p))
-            self.after(0, lambda s=status_msg: self.status_text.configure(text=s))
-            self.after(
-                0, lambda p=progress_msg: self.sds_progress_text.configure(text=p)
-            )
-
-            # Show results dialog
-            result_text = (
-                f"Processing Complete\n\n"
-                f"Total Files: {total_files}\n"
-                f"Successful: {successful}\n"
-                f"Failed: {failed}\n"
-                f"Dangerous: {dangerous_count}"
-            )
-            self.after(
-                0, lambda: messagebox.showinfo("Processing Complete", result_text)
-            )
-
-            logger.info(
-                "SDS batch processing complete: %d successful, %d failed, %d dangerous",
-                successful,
-                failed,
-                dangerous_count,
-            )
-
-        except Exception as e:
-            error_msg = f"Processing error: {str(e)}"
-            logger.error(error_msg)
-            self.after(0, lambda: self.status_text.configure(text=error_msg))
-            self.after(0, lambda: messagebox.showerror("Processing Error", error_msg))
-
-    def _process_sds_script_async(self, folder: str) -> None:
-        """Process SDS documents using the RAG script asynchronously.
-
-        Args:
-            folder: Path to SDS folder
-        """
-        import subprocess
-        import sys
-
-        try:
-            self.after(
-                0, lambda: self.status_text.configure(text="Initializing RAG script...")
-            )
-            self.after(0, lambda: self.sds_progress.set(0))
-            self.after(
-                0, lambda: self.sds_progress_text.configure(text="Starting script...")
-            )
-
-            cmd = [
-                sys.executable,
-                "scripts/rag_sds_processor.py",
-                "--input",
-                folder,
-            ]
-
-            # Run script
-            process = subprocess.Popen(
-                cmd,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                text=True,
-                cwd=Path.cwd(),
-            )
-
-            # Read output
-            stdout, stderr = process.communicate()
-
-            if process.returncode == 0:
-                self.after(
-                    0, lambda: self.status_text.configure(text="Processing complete")
-                )
-                self.after(0, lambda: self.sds_progress.set(1.0))
-                self.after(
-                    0, lambda: self.sds_progress_text.configure(text="Complete (100%)")
-                )
-
-                msg = f"Script Output:\n{stdout}"
-                self.after(0, lambda: messagebox.showinfo("Processing Complete", msg))
-            else:
-                error_msg = f"Script failed:\n{stderr}"
-                self.after(
-                    0, lambda: self.status_text.configure(text="Processing failed")
-                )
-                self.after(0, lambda: messagebox.showerror("Error", error_msg))
-
-            logger.info("RAG script finished with code %d", process.returncode)
-
-        except Exception as e:
-            error_msg = f"Script execution error: {str(e)}"
-            logger.error(error_msg)
-            self.after(0, lambda: self.status_text.configure(text=error_msg))
-            self.after(0, lambda: messagebox.showerror("Error", error_msg))
-
-    def _on_export(self) -> None:
-        """Handle export button."""
-        folder = filedialog.askdirectory(title="Select export location", parent=self)
-        if folder:
-            logger.info("Exporting to: %s", folder)
-            self.status_text.configure(text=f"Exporting to: {folder}")
-            # Start async export in background thread
-            thread = threading.Thread(target=self._export_async, args=(folder,))
-            thread.daemon = True
-            thread.start()
-
-    def _export_async(self, output_dir: str) -> None:
-        """Export matrices asynchronously.
-
-        Args:
-            output_dir: Directory to export to
-        """
-        from ..matrix.builder import MatrixBuilder
-        from ..matrix.exporter import MatrixExporter
-
-        try:
-            self.after(
-                0, lambda: self.status_text.configure(text="Building matrices...")
-            )
-
-            # Build matrices
-            builder = MatrixBuilder()
-            incomp_matrix = builder.build_incompatibility_matrix()
-            hazard_matrix = builder.build_hazard_matrix()
-            stats = builder.get_matrix_statistics()
-            dangerous_chems = builder.get_dangerous_chemicals()
-            processing_summary = builder.get_processing_summary()
-
-            if incomp_matrix.empty and hazard_matrix.empty:
-                error_msg = (
-                    "No data available for export. Please process some SDS files first."
-                )
-                self.after(0, lambda: self.status_text.configure(text=error_msg))
-                self.after(0, lambda: messagebox.showwarning("No Data", error_msg))
-                return
-
-            self.after(
-                0, lambda: self.status_text.configure(text="Exporting matrices...")
-            )
-
-            # Export using MatrixExporter
-            exporter = MatrixExporter()
-
-            # Prepare matrices dict
-            matrices = {}
-            if not incomp_matrix.empty:
-                matrices["Matriz_Incompatibilidades"] = incomp_matrix
-            if not hazard_matrix.empty:
-                matrices["Matriz_Classes_de_Perigo"] = hazard_matrix
-
-            # Prepare statistics
-            stats_dict = {
-                "Total de Produtos": stats.total_chemicals,
-                "Pares de Incompatibilidade": stats.incompatibility_pairs,
-                "Distribuicao de Perigos": stats.hazard_distribution,
-                "Status de Processamento": stats.processing_status,
-                "Media de Completude (%)": f"{stats.avg_completeness * 100:.1f}%",
-                "Media de Confianca (%)": f"{stats.avg_confidence * 100:.1f}%",
-                "Resumo de Processamento": processing_summary,
-            }
-
-            # Export report
-            export_results = exporter.export_report(
-                matrices=matrices,
-                statistics=stats_dict,
-                output_dir=output_dir,
-                format_type="all",
-            )
-
-            # Export dangerous chemicals if available
-            if dangerous_chems:
-                dangerous_path = Path(output_dir) / "dangerous_chemicals.xlsx"
-                exporter.export_dangerous_chemicals_report(
-                    dangerous_chems, dangerous_path
-                )
-                export_results["dangerous_chemicals"] = True
-
-            # Summary
-            status_msg = f"Export complete: {len(export_results)} files exported"
-            self.after(0, lambda: self.status_text.configure(text=status_msg))
-
-            logger.info("Export complete with results: %s", export_results)
-            self.after(
-                0,
-                lambda: messagebox.showinfo(
-                    "Export Complete",
-                    f"Successfully exported {len(export_results)} files to:\n{output_dir}",
-                ),
-            )
-
-        except Exception as e:
-            error_msg = f"Export error: {str(e)}"
-            logger.error(error_msg)
-            self.after(0, lambda: self.status_text.configure(text=error_msg))
-            self.after(0, lambda: messagebox.showerror("Export Error", error_msg))
-
-    def _on_build_matrix(self) -> None:
-        """Handle build matrix button."""
-        logger.info("Building chemical compatibility matrix")
-        self.status_text.configure(text="Building compatibility matrix...")
-        # Start async matrix building in background thread
-        thread = threading.Thread(target=self._build_matrix_async)
-        thread.daemon = True
-        thread.start()
-
-    def _build_matrix_async(self) -> None:
-        """Build and display chemical compatibility matrix asynchronously."""
-        from ..matrix.builder import MatrixBuilder
-
-        try:
-            self.after(
-                0, lambda: self.status_text.configure(text="Building matrices...")
-            )
-
-            # Build matrices and statistics
-            builder = MatrixBuilder()
-            incomp_matrix = builder.build_incompatibility_matrix()
-            hazard_matrix = builder.build_hazard_matrix()
-            stats = builder.get_matrix_statistics()
-            dangerous_chems = builder.get_dangerous_chemicals()
-
-            if incomp_matrix.empty and hazard_matrix.empty:
-                error_msg = "No data available. Please process some SDS files first."
-                self.after(0, lambda: self.status_text.configure(text=error_msg))
-                self.after(0, lambda: messagebox.showwarning("No Data", error_msg))
-                return
-
-            self.after(0, lambda: self.status_text.configure(text="Building complete"))
-
-            # Show results in a new window
-            self.after(
-                0,
-                lambda: self._show_matrix_results(
-                    incomp_matrix, hazard_matrix, stats, dangerous_chems
-                ),
-            )
-
-        except Exception as e:
-            error_msg = f"Matrix building error: {str(e)}"
-            logger.error(error_msg)
-            self.after(0, lambda: self.status_text.configure(text=error_msg))
-            self.after(0, lambda: messagebox.showerror("Build Error", error_msg))
-
-    def _show_matrix_results(
-        self,
-        incomp_matrix,
-        hazard_matrix,
-        stats,
-        dangerous_chems,
-    ) -> None:
-        """Show matrix results in a dedicated window.
-
-        Args:
-            incomp_matrix: Incompatibility matrix DataFrame
-            hazard_matrix: Hazard matrix DataFrame
-            stats: Matrix statistics
-            dangerous_chems: List of dangerous chemicals
-        """
-        # Create results window
-        results_window = ctk.CTkToplevel(self)
-        results_window.title("Resultados da Matriz de Compatibilidade")
-        results_window.geometry("900x600")
-
-        # Create main frame with tabs
-        tab_view = ctk.CTkTabview(
-            results_window,
-            fg_color=self.colors["bg"],
-            segmented_button_fg_color=self.colors["surface"],
-            segmented_button_selected_color=self.colors["accent"],
-        )
-        tab_view.pack(fill="both", expand=True, padx=10, pady=10)
-
-        # === Statistics Tab ===
-        tab_view.add("Statistics")
-        stats_tab = tab_view.tab("Statistics")
-
-        stats_frame = ctk.CTkFrame(
-            stats_tab, fg_color=self.colors["surface"], corner_radius=10
-        )
-        stats_frame.pack(fill="both", expand=True, padx=10, pady=10)
-
-        stats_text = (
-            f"Total de Produtos: {stats.total_chemicals}\n"
-            f"Pares de Incompatibilidade: {stats.incompatibility_pairs}\n"
-            f"Média de Completude: {stats.avg_completeness * 100:.1f}%\n"
-            f"Média de Confiança: {stats.avg_confidence * 100:.1f}%\n\n"
-            f"Distribuição de Perigos:\n"
-        )
-
-        for hazard, count in stats.hazard_distribution.items():
-            stats_text += f"  {hazard}: {count}\n"
-
-        stats_text += "\nStatus de Processamento:\n"
-        for status, count in stats.processing_status.items():
-            stats_text += f"  {status}: {count}\n"
-
-        stats_label = ctk.CTkLabel(
-            stats_frame,
-            text=stats_text,
-            font=("JetBrains Mono", 11),
-            text_color=self.colors["text"],
-            justify="left",
-        )
-        stats_label.pack(fill="both", expand=True, padx=10, pady=10)
-
-        # === Incompatibility Matrix Tab ===
-        if not incomp_matrix.empty:
-            tab_view.add("Incompatibilidades")
-            incomp_tab = tab_view.tab("Incompatibilidades")
-
-            incomp_frame = ctk.CTkFrame(
-                incomp_tab, fg_color=self.colors["surface"], corner_radius=10
-            )
-            incomp_frame.pack(fill="both", expand=True, padx=10, pady=10)
-
-            # Create text widget to display matrix
-            incomp_text = ctk.CTkTextbox(
-                incomp_frame,
-                fg_color=self.colors["input"],
-                text_color=self.colors["text"],
-                font=("JetBrains Mono", 11),
-                border_color=self.colors["accent"],
-                border_width=1,
-                wrap="none",
-            )
-            incomp_text.pack(fill="both", expand=True)
-
-            # Format matrix as table
-            matrix_str = self._format_dataframe_for_display(incomp_matrix)
-            incomp_text.insert("1.0", matrix_str)
-            incomp_text.configure(state="disabled")
-
-        # === Hazard Matrix Tab ===
-        if not hazard_matrix.empty:
-            tab_view.add("Classes de Perigo")
-            hazard_tab = tab_view.tab("Classes de Perigo")
-
-            hazard_frame = ctk.CTkFrame(
-                hazard_tab, fg_color=self.colors["surface"], corner_radius=10
-            )
-            hazard_frame.pack(fill="both", expand=True, padx=10, pady=10)
-
-            # Create text widget to display matrix
-            hazard_text = ctk.CTkTextbox(
-                hazard_frame,
-                fg_color=self.colors["input"],
-                text_color=self.colors["text"],
-                font=("JetBrains Mono", 11),
-                border_color=self.colors["accent"],
-                border_width=1,
-                wrap="none",
-            )
-            hazard_text.pack(fill="both", expand=True)
-
-            # Format matrix as table
-            matrix_str = self._format_dataframe_for_display(hazard_matrix)
-            hazard_text.insert("1.0", matrix_str)
-            hazard_text.configure(state="disabled")
-
-        # === Dangerous Chemicals Tab ===
-        if dangerous_chems:
-            tab_view.add("Perigosos")
-            dangerous_tab = tab_view.tab("Perigosos")
-
-            dangerous_frame = ctk.CTkFrame(
-                dangerous_tab, fg_color=self.colors["surface"], corner_radius=10
-            )
-            dangerous_frame.pack(fill="both", expand=True, padx=10, pady=10)
-
-            # Create text widget to display dangerous chemicals
-            dangerous_text = ctk.CTkTextbox(
-                dangerous_frame,
-                fg_color=self.colors["input"],
-                text_color=self.colors["text"],
-                border_color=self.colors["accent"],
-                border_width=1,
-            )
-            dangerous_text.pack(fill="both", expand=True)
-
-            # Format dangerous chemicals
-            dangerous_str = "QUÍMICOS PERIGOSOS:\n" + "=" * 80 + "\n\n"
-            for i, chem in enumerate(dangerous_chems, 1):
-                dangerous_str += (
-                    f"{i}. {chem.get('product_name', 'Desconhecido')}\n"
-                    f"   Classe de Perigo: {chem.get('hazard_class', 'Desconhecida')}\n"
-                    f"   Número ONU: {chem.get('un_number', 'Desconhecido')}\n"
-                    f"   Incompatibilidades: {chem.get('incompatibilities', 'Nenhuma listada')}\n\n"
-                )
-
-            dangerous_text.insert("1.0", dangerous_str)
-            dangerous_text.configure(state="disabled")
-
-        # === Bottom button frame ===
-        btn_frame = ctk.CTkFrame(results_window, fg_color="transparent")
-        btn_frame.pack(fill="x", padx=10, pady=10)
-
-        from .components.app_button import AppButton
-        AppButton(
-            btn_frame,
-            text="Close",
-            command=results_window.destroy,
-            fg_color=self.colors["primary"],
-            text_color=self.colors["header"],
-            hover_color=self.colors["button_hover"],
-            width=160,
-        ).pack(side="left", padx=5)
-
-        AppButton(
-            btn_frame,
-            text="Export Results",
-            command=lambda: self._on_export(),
-            fg_color=self.colors["accent"],
-            text_color=self.colors["header"],
-            hover_color=self.colors["button_hover"],
-            width=180,
-        ).pack(side="left", padx=5)
-
-    def _format_dataframe_for_display(self, df) -> str:
-        """Format a DataFrame for text display.
-
-        Args:
-            df: DataFrame to format
-
-        Returns:
-            Formatted string representation
-        """
-        try:
-            # Limit extreme widths to keep columns aligned in the textbox
-            return df.to_string(index=True, max_colwidth=24, justify="center")
-        except Exception:
-            return str(df)
 
     def _refresh_rag_stats(self) -> None:
-        """Refresh the RAG knowledge base statistics display."""
-        try:
-            stats = self.db.get_statistics()
-            last_updated = stats.get("rag_last_updated") or "Never"
-            stats_text = (
-                f"Documents: {stats.get('rag_documents', 0)} | "
-                f"Chunks: {stats.get('rag_chunks', 0)} | "
-                f"Last Updated: {last_updated}"
-            )
-            if hasattr(self, "rag_stats_label"):
-                self.rag_stats_label.configure(text=stats_text)
-            if hasattr(self, "sources_status_var") and stats.get("rag_chunks", 0) == 0:
-                self.sources_status_var.set("Knowledge base empty - ingest sources")
-        except Exception as e:
-            logger.error("Error refreshing RAG stats: %s", e)
+        stats = self.db.get_statistics()
+        last_updated = stats.get("rag_last_updated") or "Never"
+        text = f"Documents: {stats.get('rag_documents', 0)} | Chunks: {stats.get('rag_chunks', 0)} | Last updated: {last_updated}"
+        self.rag_stats_label.setText(text)
 
-    def _refresh_sources_list(self) -> None:
-        """Refresh the recent sources display."""
-        if not hasattr(self, "sources_textbox"):
-            return
-
+    def _refresh_sources_table(self) -> None:
         try:
             sources = self.db.get_rag_documents()
-            rows = []
-            for doc in sources[:100]:
-                timestamp = doc.get("indexed_at")
-                if timestamp and hasattr(timestamp, "strftime"):
-                    ts_str = timestamp.strftime("%Y-%m-%d %H:%M")
-                else:
-                    ts_str = str(timestamp) if timestamp else ""
-                title = (
-                    doc.get("title")
-                    or doc.get("source_path")
-                    or doc.get("source_url")
-                    or "Sem título"
-                )
-                rows.append(
-                    (
-                        ts_str,
-                        title,
-                        doc.get("chemical_name") or "",
-                        doc.get("source_type"),
-                        doc.get("chunk_count", 0),
-                    )
-                )
-
-            if hasattr(self, "sources_table"):
-                if not rows:
-                    rows = [("Nenhum dado", "", "", "", "")]
-                self.sources_table.set_data(
-                    ["Data/Hora", "Título", "Nome Químico", "Tipo", "Chunks"],
-                    rows,
-                    accent_color=self.colors["accent"],
-                )
-        except Exception as e:
-            logger.error("Failed to refresh knowledge sources: %s", e)
-
-    def _update_snapshot_label(self) -> None:
-        """Display the last Bright Data snapshot id."""
-        if not hasattr(self, "bright_snapshot_var"):
+        except Exception as exc:
+            logger.error("Failed to load sources: %s", exc)
+            self.sources_table.setRowCount(0)
             return
-        snapshot_id = self.ingestion.get_last_snapshot_id()
-        if snapshot_id:
-            self.bright_snapshot_var.set(f"Snapshot: {snapshot_id}")
+
+        rows = []
+        for doc in sources[:200]:
+            ts = doc.get("indexed_at")
+            ts_str = ts.strftime("%Y-%m-%d %H:%M") if hasattr(ts, "strftime") else str(ts or "")
+            rows.append(
+                (
+                    ts_str,
+                    doc.get("title") or doc.get("source_path") or doc.get("source_url") or "",
+                    doc.get("source_type") or "",
+                    str(doc.get("chunk_count", 0)),
+                )
+            )
+
+        self.sources_table.setRowCount(len(rows))
+        for r, row in enumerate(rows):
+            for c, value in enumerate(row):
+                item = QtWidgets.QTableWidgetItem(value)
+                self.sources_table.setItem(r, c, item)
+        self.sources_table.resizeColumnsToContents()
+
+    # === Records / Review ===
+
+    def _on_refresh_records(self) -> None:
+        limit = int(self.records_limit.value())
+        self._set_status(f"Loading {limit} records…")
+        self._start_task(self._records_task, limit, on_result=self._on_records_loaded)
+
+    def _records_task(self, limit: int, *, signals: WorkerSignals | None = None) -> list[dict]:
+        results = self.db.fetch_results(limit=limit)
+        if signals:
+            signals.message.emit(f"Loaded {len(results)} records")
+        return results
+
+    def _on_records_loaded(self, result: object) -> None:
+        if not isinstance(result, list):
+            return
+        self._populate_table(
+            self.records_table,
+            result,
+            columns=[
+                ("filename", "File"),
+                ("status", "Status"),
+                ("product_name", "Product"),
+                ("cas_number", "CAS"),
+                ("hazard_class", "Hazard"),
+                ("avg_confidence", "Confidence"),
+                ("processed_at", "Processed"),
+            ],
+        )
+        self.records_info.setText(f"Showing {len(result)} records")
+        self._set_status("Records refreshed")
+
+    def _on_refresh_review(self) -> None:
+        limit = 100
+        self._set_status("Refreshing review table…")
+        self._start_task(self._records_task, limit, on_result=self._on_review_loaded)
+
+    def _on_review_loaded(self, result: object) -> None:
+        if not isinstance(result, list):
+            return
+        self._populate_table(
+            self.review_table,
+            result,
+            columns=[
+                ("filename", "File"),
+                ("status", "Status"),
+                ("product_name", "Product"),
+                ("cas_number", "CAS"),
+                ("un_number", "UN"),
+                ("hazard_class", "Hazard"),
+            ],
+        )
+        self._set_status("Review table refreshed")
+
+    def _populate_table(self, table: QtWidgets.QTableWidget, rows: list[dict], *, columns: list[tuple[str, str]]) -> None:
+        table.setColumnCount(len(columns))
+        table.setHorizontalHeaderLabels([label for _, label in columns])
+        table.setRowCount(len(rows))
+        for r, row in enumerate(rows):
+            for c, (key, _) in enumerate(columns):
+                value = row.get(key, "")
+                if key == "avg_confidence" and isinstance(value, (int, float)):
+                    value = f"{value * 100:.0f}%"
+                if key == "processed_at" and hasattr(value, "strftime"):
+                    value = value.strftime("%Y-%m-%d %H:%M")
+                item = QtWidgets.QTableWidgetItem(str(value))
+                table.setItem(r, c, item)
+        table.resizeColumnsToContents()
+
+    # === SDS processing ===
+
+    def _on_select_folder(self) -> None:
+        folder = QtWidgets.QFileDialog.getExistingDirectory(
+            self, "Select SDS folder", str(self.settings.paths.input_dir)
+        )
+        if folder:
+            self._selected_sds_folder = Path(folder)
+            self.folder_label.setText(str(self._selected_sds_folder))
+            self._load_sds_files()
+
+    def _load_sds_files(self) -> None:
+        if not self._selected_sds_folder:
+            return
+        files = self._collect_sds_files(self._selected_sds_folder)
+        self.sds_table.setRowCount(len(files))
+        for idx, file_path in enumerate(files):
+            self.sds_table.setItem(idx, 0, QtWidgets.QTableWidgetItem(file_path.name))
+            self.sds_table.setItem(idx, 1, QtWidgets.QTableWidgetItem(""))
+            self.sds_table.setItem(idx, 2, QtWidgets.QTableWidgetItem("Pending"))
+        self.sds_table.resizeColumnsToContents()
+
+    def _collect_sds_files(self, folder: Path) -> list[Path]:
+        files: list[Path] = []
+        for suffix in SUPPORTED_FORMATS:
+            files.extend(folder.rglob(f"*{suffix}"))
+        return sorted(files)
+
+    def _on_process_sds(self) -> None:
+        if not self._selected_sds_folder:
+            QtWidgets.QMessageBox.warning(self, "No folder", "Select an SDS folder first.")
+            return
+        files = self._collect_sds_files(self._selected_sds_folder)
+        if not files:
+            QtWidgets.QMessageBox.information(self, "No files", "No supported SDS files found.")
+            return
+        self.sds_progress.setValue(0)
+        use_rag = self.use_rag_checkbox.isChecked()
+        self._set_status(f"Processing {len(files)} files…")
+        self._start_task(self._process_sds_task, files, use_rag, on_result=self._on_sds_done)
+
+    def _process_sds_task(self, files: list[Path], use_rag: bool, *, signals: WorkerSignals | None = None) -> list[tuple[str, str, str]]:
+        processor = SDSProcessor()
+        results: list[tuple[str, str, str]] = []
+        total = max(1, len(files))
+        for idx, path in enumerate(files, 1):
+            if signals:
+                pct = int(idx / total * 100)
+                signals.progress.emit(pct, f"{path.name} ({idx}/{total})")
+                signals.message.emit(f"Processing {path.name}")
+            try:
+                res = processor.process(path, use_rag=use_rag)
+                chemical = ""
+                if res.extractions and "product_name" in res.extractions:
+                    product = res.extractions.get("product_name", {})
+                    chemical = product.get("value") or product.get("normalized_value") or ""
+                results.append((path.name, chemical, res.status))
+            except Exception as exc:
+                logger.error("Failed to process %s: %s", path, exc)
+                if signals:
+                    signals.error.emit(f"Failed: {path.name} ({exc})")
+                results.append((path.name, "", "error"))
+        return results
+
+    def _on_sds_done(self, result: object) -> None:
+        if not isinstance(result, list):
+            return
+        self.sds_table.setRowCount(len(result))
+        for idx, (fname, chemical, status) in enumerate(result):
+            self.sds_table.setItem(idx, 0, QtWidgets.QTableWidgetItem(fname))
+            self.sds_table.setItem(idx, 1, QtWidgets.QTableWidgetItem(chemical))
+            self.sds_table.setItem(idx, 2, QtWidgets.QTableWidgetItem(status))
+        self.sds_table.resizeColumnsToContents()
+        self.sds_progress.setValue(100)
+        self._refresh_db_stats()
+        QtWidgets.QMessageBox.information(self, "Processing complete", f"Processed {len(result)} files.")
+
+    def _on_build_matrix(self) -> None:
+        self._set_status("Building matrices…")
+        self._start_task(self._build_matrix_task, on_result=self._on_matrix_built)
+
+    def _build_matrix_task(self, *, signals: WorkerSignals | None = None) -> dict:
+        builder = MatrixBuilder()
+        incomp_matrix = builder.build_incompatibility_matrix()
+        hazard_matrix = builder.build_hazard_matrix()
+        stats = builder.get_matrix_statistics()
+        dangerous = builder.get_dangerous_chemicals()
+        if signals:
+            signals.message.emit("Matrices built")
+        return {
+            "incompatibility": incomp_matrix,
+            "hazard": hazard_matrix,
+            "stats": stats,
+            "dangerous": dangerous,
+        }
+
+    def _on_matrix_built(self, result: object) -> None:
+        if not isinstance(result, dict):
+            return
+        stats = result.get("stats")
+        if stats:
+            msg = (
+                f"Total products: {stats.total_chemicals}\n"
+                f"Incompatibility pairs: {stats.incompatibility_pairs}\n"
+                f"Average completeness: {stats.avg_completeness * 100:.1f}%\n"
+                f"Average confidence: {stats.avg_confidence * 100:.1f}%"
+            )
         else:
-            self.bright_snapshot_var.set("Snapshot: None")
+            msg = "Matrices built."
+        QtWidgets.QMessageBox.information(self, "Matrix", msg)
 
-    def get_text(self, key: str, **kwargs: str) -> str:
-        """Expose translation helper for child widgets."""
-        return get_text(key, **kwargs)
+    def _on_export(self) -> None:
+        output_dir = QtWidgets.QFileDialog.getExistingDirectory(
+            self, "Select export directory", str(self.settings.paths.output_dir)
+        )
+        if not output_dir:
+            return
+        self._set_status(f"Exporting to {output_dir}…")
+        self._start_task(self._export_task, Path(output_dir), on_result=self._on_export_done)
 
-    def _toggle_language(self) -> None:
-        """Toggle between PT and EN."""
-        from ..config.i18n import get_i18n
+    def _export_task(self, output_dir: Path, *, signals: WorkerSignals | None = None) -> dict:
+        builder = MatrixBuilder()
+        incomp_matrix = builder.build_incompatibility_matrix()
+        hazard_matrix = builder.build_hazard_matrix()
+        stats = builder.get_matrix_statistics()
+        dangerous_chems = builder.get_dangerous_chemicals()
 
-        i18n = get_i18n()
-        new_lang = "en" if i18n.language == "pt" else "pt"
-        set_language(new_lang)
-        logger.info("Language changed to: %s", new_lang)
-        self.status_text.configure(text=f"Language: {new_lang.upper()}")
+        exporter = MatrixExporter()
 
-    def _on_close(self) -> None:
-        """Handle window close - save window state before exiting."""
-        logger.info("Application closing")
-        if hasattr(self, "window_manager"):
-            self.window_manager.handle_window_close()
-        else:
-            self.destroy()
+        matrices = {}
+        if not incomp_matrix.empty:
+            matrices["Matriz_Incompatibilidades"] = incomp_matrix
+        if not hazard_matrix.empty:
+            matrices["Matriz_Classes_de_Perigo"] = hazard_matrix
+
+        stats_dict = {
+            "Total de Produtos": stats.total_chemicals,
+            "Pares de Incompatibilidade": stats.incompatibility_pairs,
+            "Distribuicao de Perigos": stats.hazard_distribution,
+            "Status de Processamento": stats.processing_status,
+            "Media de Completude (%)": f"{stats.avg_completeness * 100:.1f}%",
+            "Media de Confianca (%)": f"{stats.avg_confidence * 100:.1f}%",
+        }
+
+        export_results = exporter.export_report(
+            matrices=matrices,
+            statistics=stats_dict,
+            output_dir=output_dir,
+            format_type="all",
+        )
+
+        if dangerous_chems:
+            dangerous_path = Path(output_dir) / "dangerous_chemicals.xlsx"
+            exporter.export_dangerous_chemicals_report(dangerous_chems, dangerous_path)
+            export_results["dangerous_chemicals"] = True
+
+        if signals:
+            signals.message.emit("Export complete")
+        return export_results
+
+    def _on_export_done(self, result: object) -> None:
+        if isinstance(result, dict):
+            QtWidgets.QMessageBox.information(
+                self,
+                "Export complete",
+                f"Exported {len(result)} file(s).",
+            )
+        self._refresh_db_stats()
+
+    # === Backup ===
+
+    def _on_backup(self) -> None:
+        output_dir = QtWidgets.QFileDialog.getExistingDirectory(
+            self, "Select backup directory", str(self.settings.paths.output_dir)
+        )
+        if not output_dir:
+            return
+        self._set_status(f"Starting backup to {output_dir}…")
+        self._start_task(self._backup_task, Path(output_dir), on_result=self._on_backup_done)
+
+    def _backup_task(self, output_dir: Path, *, signals: WorkerSignals | None = None) -> str:
+        db_path = str(getattr(self.settings.paths, "duckdb", "data/duckdb/extractions.db"))
+        cmd = [
+            sys.executable,
+            "scripts/rag_backup.py",
+            "--output",
+            str(output_dir),
+            "--db",
+            db_path,
+        ]
+        proc = subprocess.run(cmd, capture_output=True, text=True, cwd=Path.cwd())
+        log = proc.stdout or ""
+        if proc.stderr:
+            log += "\n[stderr]\n" + proc.stderr
+        if signals:
+            signals.message.emit(f"Backup finished (code {proc.returncode})")
+        return log
+
+    def _on_backup_done(self, result: object) -> None:
+        if isinstance(result, str):
+            self.backup_log.setPlainText(result.strip() or "No log output.")
+        self._set_status("Backup complete")
+
+    # === Status ===
+
+    def _refresh_db_stats(self) -> None:
+        stats = self.db.get_statistics()
+        text = (
+            f"Documents: {stats.get('total_documents', 0)} | "
+            f"Processed: {stats.get('processed', stats.get('successful_documents', 0))} | "
+            f"Failed: {stats.get('failed_documents', 0)} | "
+            f"RAG docs: {stats.get('rag_documents', 0)}"
+        )
+        self.status_stats_label.setText(text)
+
+        # Update Ollama status
+        try:
+            models = self.ollama.list_models()
+            if models:
+                status_text = f"✓ Connected - Available models: {len(models)}"
+                self._style_label(self.ollama_status_label, color=self.colors.get("success", "#22c55e"))
+            else:
+                status_text = "⚠ Connected but no models available"
+                self._style_label(self.ollama_status_label, color=self.colors.get("warning", "#f59e0b"))
+        except Exception as e:
+            status_text = f"✗ Not connected: {str(e)}"
+            self._style_label(self.ollama_status_label, color=self.colors.get("error", "#f87171"))
+
+        self.ollama_status_label.setText(status_text)
+
+    def _on_chat_send(self) -> None:
+        """Handle chat message sending."""
+        text = self.chat_input.text().strip()
+        if not text:
+            return
+
+        # Add user message to display
+        self.chat_display.append(f"<b>You:</b> {text}")
+        self.chat_input.clear()
+
+        # TODO: Implement RAG query and LLM response
+        self.chat_display.append(
+            "<i>Chat functionality is being implemented. "
+            "This will use RAG to retrieve documents and Ollama for responses.</i>"
+        )
 
 
 def run_app() -> None:
     """Application entry point."""
-    app = Application()
-    app.mainloop()
+    app = QtWidgets.QApplication([])
+    window = MainWindow()
+    window.show()
+    app.exec()
