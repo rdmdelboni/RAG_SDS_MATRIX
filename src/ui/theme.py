@@ -101,11 +101,12 @@ COLORS_DARK: Final[dict[str, str]] = {
     "subtext": "#a6adc8",
     # Accents
     "accent": "#4fd1c5",  # teal
-    "primary": "#3b82f6",  # blue
+    "primary": "#1e40af",  # darker blue
+    "primary_hover": "#3b82f6",  # bright blue
     "success": "#22c55e",
     "warning": "#f59e0b",
     "error": "#f87171",
-    "button_hover": "#67e8f9",
+    "button_hover": "#3b82f6",
     # Tabs / trees
     "tab_inactive": "#1c2b47",
     "tab_active": "#2b3b63",
@@ -128,11 +129,12 @@ COLORS_LIGHT: Final[dict[str, str]] = {
     "subtext": "#4b5563",
     # Accents
     "accent": "#0ea5e9",
-    "primary": "#2563eb",
+    "primary": "#1e40af",  # darker blue
+    "primary_hover": "#2563eb",  # bright blue
     "success": "#16a34a",
     "warning": "#d97706",
     "error": "#dc2626",
-    "button_hover": "#38bdf8",
+    "button_hover": "#2563eb",
     # Tabs / trees
     "tab_inactive": "#d7e1f0",
     "tab_active": "#b8c7e6",

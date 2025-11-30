@@ -553,10 +553,10 @@ class MainWindow(QtWidgets.QMainWindow):
             "font-weight: 500;"
             "}"
             "QPushButton:hover {"
-            f"background-color: {self.colors['button_hover']};"
+            f"background-color: {self.colors.get('primary_hover', self.colors['button_hover'])};"
             "}"
             "QPushButton:pressed {"
-            f"background-color: {self.colors['accent']};"
+            f"background-color: {self.colors['primary']};"
             "}"
         )
 
