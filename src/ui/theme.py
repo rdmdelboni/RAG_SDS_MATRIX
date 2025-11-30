@@ -107,6 +107,7 @@ COLORS_DARK: Final[dict[str, str]] = {
     "warning": CatppuccinMocha.yellow,  # #f9e2af
     "error": CatppuccinMocha.red,  # #f38ba8
     "button_hover": CatppuccinMocha.blue,  # #89b4fa
+    "button_text": CatppuccinMocha.surface2,  # #585b70 (dark grey)
     # Tabs / trees (Catppuccin Mocha)
     "tab_inactive": CatppuccinMocha.surface0,  # #313244
     "tab_active": CatppuccinMocha.surface1,  # #45475a

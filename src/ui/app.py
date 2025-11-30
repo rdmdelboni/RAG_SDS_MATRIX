@@ -128,24 +128,24 @@ class MainWindow(QtWidgets.QMainWindow):
         header_row.addStretch()
 
         close_btn = QtWidgets.QPushButton("×")
-        close_btn.setFixedSize(36, 36)
+        close_btn.setFixedSize(24, 24)
         close_btn.setToolTip("Exit application")
         close_btn.setCursor(QtGui.QCursor(QtCore.Qt.PointingHandCursor))
         close_btn.setStyleSheet(
             "QPushButton {"
-            f"background-color: {self.colors.get('error', '#f87171')};"
+            f"background-color: {self.colors.get('error', '#f38ba8')};"
             "border: none;"
-            "border-radius: 6px;"
+            "border-radius: 4px;"
             f"color: {self.colors['bg']};"
             "font-weight: 700;"
-            "font-size: 18px;"
+            "font-size: 14px;"
             "padding: 0px;"
             "}"
             "QPushButton:hover {"
-            f"background-color: {self.colors.get('warning', '#f59e0b')};"
+            f"background-color: {self.colors.get('warning', '#f9e2af')};"
             "}"
             "QPushButton:pressed {"
-            f"background-color: {self.colors.get('error', '#f87171')};"
+            f"background-color: {self.colors.get('error', '#f38ba8')};"
             "}"
         )
         close_btn.clicked.connect(self.close)
@@ -548,7 +548,7 @@ class MainWindow(QtWidgets.QMainWindow):
             f"background-color: {self.colors['primary']};"
             "border: none;"
             "border-radius: 4px;"
-            f"color: {self.colors['text']};"
+            f"color: {self.colors.get('button_text', '#585b70')};"
             "padding: 6px 12px;"
             "font-weight: 500;"
             "}"
