@@ -68,7 +68,7 @@ class DatabaseManager:
                 self.conn = duckdb.connect(":memory:")
                 logger.warning("Using in-memory DuckDB (RAG_SDS_MATRIX_DB_MODE=memory)")
             else:
-                self.conn = duckdb.connect(str(self.db_path))
+                self.conn = self._connect_with_wal_recovery(str(self.db_path))
         except duckdb.IOException as e:
             # Fallback to in-memory DB on lock conflicts to keep tests runnable
             if "lock" in str(e).lower():
@@ -83,6 +83,45 @@ class DatabaseManager:
 
         logger.info("Connected to DuckDB: %s", self.db_path)
         self._initialize_schema()
+
+    def _connect_with_wal_recovery(self, db_path: str) -> duckdb.DuckDBPyConnection:
+        """Connect to DuckDB with automatic WAL recovery on corruption.
+
+        If WAL replay fails due to corruption, automatically moves the WAL
+        file aside and retries the connection once.
+
+        Args:
+            db_path: Path to the database file
+
+        Returns:
+            DuckDB connection
+
+        Raises:
+            duckdb.InternalException: If connection fails after recovery attempt
+        """
+        try:
+            return duckdb.connect(db_path)
+        except duckdb.InternalException as e:
+            error_msg = str(e)
+            # Check for WAL replay failure signatures
+            if "WAL file" in error_msg and ("replay" in error_msg.lower() or "Failure while" in error_msg):
+                wal_path = Path(f"{db_path}.wal")
+                if wal_path.exists():
+                    backup_path = Path(f"{db_path}.wal.corrupt_{int(datetime.now().timestamp())}")
+                    logger.warning(
+                        "DuckDB WAL replay failed, moving corrupt WAL: %s -> %s",
+                        wal_path,
+                        backup_path.name,
+                    )
+                    try:
+                        wal_path.rename(backup_path)
+                        logger.info("Retrying connection after WAL recovery")
+                        return duckdb.connect(db_path)
+                    except Exception as recovery_error:
+                        logger.error("WAL recovery failed: %s", recovery_error)
+                        raise e from recovery_error
+            # Re-raise if not a recoverable WAL error
+            raise
         try:
             self._create_indexes()
         except Exception as exc:  # pragma: no cover - defensive guard
@@ -113,6 +152,8 @@ class DatabaseManager:
                     num_pages INTEGER,
                     status VARCHAR DEFAULT 'pending',
                     is_dangerous BOOLEAN DEFAULT FALSE,
+                    completeness_score DOUBLE,
+                    avg_confidence DOUBLE,
                     processed_at TIMESTAMP,
                     processing_time_seconds DOUBLE,
                     error_message TEXT,
@@ -161,6 +202,16 @@ class DatabaseManager:
             self.conn.execute(
                 """
                 ALTER TABLE extractions ADD COLUMN IF NOT EXISTS metadata TEXT;
+            """
+            )
+            self.conn.execute(
+                """
+                ALTER TABLE documents ADD COLUMN IF NOT EXISTS completeness_score DOUBLE;
+            """
+            )
+            self.conn.execute(
+                """
+                ALTER TABLE documents ADD COLUMN IF NOT EXISTS avg_confidence DOUBLE;
             """
             )
             self.conn.execute(
@@ -381,6 +432,8 @@ class DatabaseManager:
         processing_time: float | None = None,
         error_message: str | None = None,
         is_dangerous: bool | None = None,
+        completeness: float | None = None,
+        avg_confidence: float | None = None,
     ) -> None:
         """Update document processing status."""
         with self._lock:
@@ -391,10 +444,20 @@ class DatabaseManager:
                     processed_at = CURRENT_TIMESTAMP,
                     processing_time_seconds = COALESCE(?, processing_time_seconds),
                     error_message = ?,
-                    is_dangerous = COALESCE(?, is_dangerous)
+                    is_dangerous = COALESCE(?, is_dangerous),
+                    completeness_score = COALESCE(?, completeness_score),
+                    avg_confidence = COALESCE(?, avg_confidence)
                 WHERE id = ?;
                 """,
-                [status, processing_time, error_message, is_dangerous, document_id],
+                [
+                    status,
+                    processing_time,
+                    error_message,
+                    is_dangerous,
+                    completeness,
+                    avg_confidence,
+                    document_id,
+                ],
             )
 
     def get_document(self, document_id: int) -> DocumentRecord | None:
@@ -512,7 +575,8 @@ class DatabaseManager:
                 MAX(CASE WHEN e.field_name = 'h_statements' THEN e.value END) AS h_statements,
                 MAX(CASE WHEN e.field_name = 'p_statements' THEN e.value END) AS p_statements,
                 MAX(CASE WHEN e.field_name = 'incompatibilities' THEN e.value END) AS incompatibilities,
-                AVG(e.confidence) AS avg_confidence,
+                COALESCE(MAX(d.completeness_score), 0) AS completeness,
+                COALESCE(MAX(d.avg_confidence), AVG(e.confidence)) AS avg_confidence,
                 COALESCE(MAX(CASE WHEN e.field_name = 'product_name' THEN TRY_CAST(json_extract(e.metadata, '$.quality_tier') AS VARCHAR) END), 'unknown') AS quality_tier,
                 COALESCE(MAX(CASE WHEN e.field_name = 'product_name' THEN json_extract(e.metadata, '$.external_validation.is_valid') END), FALSE) AS validated
             FROM documents d
@@ -541,6 +605,7 @@ class DatabaseManager:
                 "h_statements",
                 "p_statements",
                 "incompatibilities",
+                "completeness",
                 "avg_confidence",
                 "quality_tier",
                 "validated",

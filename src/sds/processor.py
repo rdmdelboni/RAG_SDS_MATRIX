@@ -6,10 +6,11 @@ import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
+import hashlib
 
 from ..config.settings import get_settings
 from ..database import get_db_manager
-from ..rag import RAGRetriever
+from ..rag import RAGRetriever, TextChunker
 from ..utils.logger import get_logger
 from .confidence_scorer import ConfidenceScorer, FieldSource
 from .extractor import SDSExtractor
@@ -52,6 +53,7 @@ class SDSProcessor:
         self.external_validator = ExternalValidator()
         self.pubchem_enricher = PubChemEnricher()
         self.confidence_scorer = ConfidenceScorer()
+        self.chunker = TextChunker()
 
     def process(self, file_path: Path, use_rag: bool = True) -> ProcessingResult:
         """Process a single SDS document.
@@ -94,6 +96,9 @@ class SDSProcessor:
 
             # PASS 2: LLM for uncertain/missing fields
             extractions = self._extraction_pass_llm(extractions, text, sections)
+
+            # PASS 2.5: Defensive normalization of field entries
+            extractions = self._defensive_normalize_extractions(extractions)
 
             # PASS 3: Cross-field validation and normalization
             extractions = self._validate_and_normalize_fields(extractions)
@@ -201,7 +206,7 @@ class SDSProcessor:
 
                 if doc_count > 0:
                     logger.debug("Phase 2: RAG field completion (completeness: %.0f%%)", completeness * 100)
-                    extractions = self._rag_complete_missing_fields(doc_id, extractions, text)
+                    extractions = self._enrich_with_rag(doc_id, extractions, text)
                     # Recalculate metrics after RAG enrichment
                     completeness = self.validator.calculate_completeness(extractions)
                     avg_confidence = self.validator.get_overall_confidence(extractions)
@@ -213,11 +218,17 @@ class SDSProcessor:
 
             # Update document status
             processing_time = time.time() - start_time
+
+            # Index raw SDS text + metadata into the RAG vector store
+            self._index_document_in_rag(doc_id, file_path, text, extractions)
+
             self.db.update_document_status(
                 doc_id,
                 status="success",
                 processing_time=processing_time,
                 is_dangerous=is_dangerous,
+                completeness=completeness,
+                avg_confidence=avg_confidence,
             )
 
             logger.info(
@@ -241,7 +252,10 @@ class SDSProcessor:
 
         except Exception as e:
             processing_time = time.time() - start_time
-            logger.error("Processing failed: %s", e)
+            # Log full traceback for better diagnostics
+            import traceback
+            tb = traceback.format_exc()
+            logger.error("Processing failed: %s\n%s", e, tb)
 
             self.db.update_document_status(
                 doc_id,
@@ -261,6 +275,36 @@ class SDSProcessor:
                 processing_time=processing_time,
                 error_message=str(e),
             )
+
+    def _defensive_normalize_extractions(
+        self, extractions: dict[str, dict[str, Any]]
+    ) -> dict[str, dict[str, Any]]:
+        """Ensure all field entries are dicts with expected keys.
+
+        Some upstream extractors (heuristics/LLM) may occasionally return raw
+        strings or other types. This function coerces any non-dict entries into
+        the standard schema to prevent attribute errors when accessing with
+        `.get` later in the pipeline.
+
+        Returns the updated `extractions` mapping.
+        """
+        normalized: dict[str, dict[str, Any]] = {}
+        for field_name, result in extractions.items():
+            if isinstance(result, dict):
+                # Ensure minimal keys
+                result.setdefault("confidence", result.get("confidence", 0.70))
+                result.setdefault("method", result.get("method", "heuristic"))
+                normalized[field_name] = result
+                continue
+
+            # For non-dict types, reuse LLM normalizer to wrap/coerce
+            wrapped = self._normalize_llm_result(result)
+            # Mark as heuristic if coming from first pass but not explicit
+            if wrapped.get("method") == "llm" and field_name in normalized:
+                pass
+            normalized[field_name] = wrapped
+
+        return normalized
 
     def _extraction_pass_heuristics(
         self, text: str, sections: dict[int, str]
@@ -318,17 +362,82 @@ class SDSProcessor:
         for field_name in uncertain_fields:
             heur_result = extractions[field_name]
             refined = self.llm.refine_heuristic(field_name, heur_result, text)
-            if refined["confidence"] > heur_result["confidence"]:
-                extractions[field_name] = refined
+            # Normalize LLM output to dict schema
+            normalized = self._normalize_llm_result(refined)
+            if normalized["confidence"] > heur_result.get("confidence", 0.0):
+                extractions[field_name] = normalized
 
         # Extract missing fields
         if missing_fields:
             llm_results = self.llm.extract_multiple_fields(missing_fields, text)
             for field_name, result in llm_results.items():
                 if field_name not in extractions:
-                    extractions[field_name] = result
+                    extractions[field_name] = self._normalize_llm_result(result)
 
         return extractions
+
+    def _normalize_llm_result(self, result: Any) -> dict[str, Any]:
+        """Normalize LLM extraction outputs into the expected dict schema.
+
+        The pipeline expects each field value as a dict with keys like
+        "value", "confidence", "source"/"method", and optional context.
+        Some LLM implementations may return a plain string or a JSON string.
+
+        This function safely converts those to the expected dict to prevent
+        attribute errors such as `'str' object has no attribute get`.
+        """
+        # If already a dict with a value, pass through
+        if isinstance(result, dict):
+            # If the dict appears to be a plain mapping without required keys,
+            # try to lift a reasonable value
+            if "value" not in result:
+                # prefer common keys
+                for candidate in ("text", "answer", "result"):
+                    if candidate in result:
+                        logger.debug(
+                            "Normalized LLM dict: lifted key '%s' to 'value'",
+                            candidate,
+                        )
+                        result = {"value": result[candidate], "confidence": result.get("confidence", 0.70), "method": result.get("method", "llm")}
+                        break
+                else:
+                    # fallback: store stringified dict as value
+                    logger.debug(
+                        "Normalized LLM dict: no value key found, stringifying dict"
+                    )
+                    result = {
+                        "value": str(result),
+                        "confidence": 0.70,
+                        "method": "llm",
+                    }
+            # Ensure minimum keys exist
+            result.setdefault("confidence", 0.70)
+            result.setdefault("method", "llm")
+            return result
+
+        # If it's a string, attempt JSON parse first
+        if isinstance(result, str):
+            import json
+            s = result.strip()
+            if (s.startswith("{") and s.endswith("}")) or (s.startswith("[") and s.endswith("]")):
+                try:
+                    parsed = json.loads(s)
+                    logger.debug(
+                        "Normalized LLM string: parsed JSON string to dict"
+                    )
+                    return self._normalize_llm_result(parsed)
+                except Exception:
+                    # fall through to wrapping
+                    pass
+            # Wrap raw string as value
+            logger.debug("Normalized LLM string: wrapped plain string as value")
+            return {"value": s, "confidence": 0.70, "method": "llm"}
+
+        # Any other type: coerce to string value
+        logger.debug(
+            "Normalized LLM result: coerced %s to string", type(result).__name__
+        )
+        return {"value": str(result), "confidence": 0.70, "method": "llm"}
 
     def _validate_and_normalize_fields(
         self, extractions: dict[str, dict[str, Any]]
@@ -528,6 +637,71 @@ class SDSProcessor:
             return f"UN {un}"
 
         return None
+
+    def _index_document_in_rag(
+        self,
+        doc_id: int,
+        file_path: Path,
+        text: str,
+        extractions: dict[str, dict[str, Any]],
+    ) -> None:
+        """Send processed SDS text + metadata into the RAG vector store."""
+        try:
+            vector_store = getattr(self.rag, "vector_store", None)
+            if not vector_store or not hasattr(vector_store, "add_documents"):
+                return
+
+            if not text or len(text.strip()) < 40:
+                return
+
+            content_hash = hashlib.sha256(
+                text.encode("utf-8", errors="ignore")
+            ).hexdigest()
+            if hasattr(self.db, "rag_document_exists") and self.db.rag_document_exists(
+                content_hash
+            ):
+                return
+
+            metadata = {
+                "source": "sds",
+                "type": "sds",
+                "document_id": doc_id,
+                "filename": file_path.name,
+                "path": str(file_path),
+                "title": extractions.get("product_name", {}).get("value")
+                or file_path.stem,
+                "cas_number": extractions.get("cas_number", {}).get("value"),
+                "hazard_class": extractions.get("hazard_class", {}).get("value"),
+                "un_number": extractions.get("un_number", {}).get("value"),
+                "packing_group": extractions.get("packing_group", {}).get("value"),
+                "incompatibilities": extractions.get("incompatibilities", {}).get(
+                    "value"
+                ),
+            }
+
+            chunks = self.chunker.chunk_text(text, metadata=metadata)
+            if not chunks:
+                return
+
+            if hasattr(vector_store, "ensure_ready") and not vector_store.ensure_ready():
+                return
+
+            vector_store.add_documents(chunks)
+            if hasattr(self.db, "register_rag_document"):
+                self.db.register_rag_document(
+                    source_type="sds",
+                    source_path=str(file_path),
+                    title=metadata.get("title"),
+                    chunk_count=len(chunks),
+                    content_hash=content_hash,
+                    metadata=metadata,
+                )
+
+            logger.info(
+                "Indexed SDS '%s' into RAG (chunks=%d)", file_path.name, len(chunks)
+            )
+        except Exception as exc:  # pragma: no cover - defensive logging
+            logger.warning("Failed to index SDS %s into RAG: %s", file_path.name, exc)
 
     def _should_enrich_field(
         self, field_name: str, extractions: dict[str, dict[str, Any]]

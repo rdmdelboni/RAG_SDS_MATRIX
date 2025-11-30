@@ -4,10 +4,6 @@ from __future__ import annotations
 
 import hashlib
 import json
-import shlex
-import subprocess
-import tempfile
-import time
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Iterable
@@ -163,50 +159,6 @@ class GoogleSearchClient:
         return results
 
 
-class Craw4AIClient:
-    """Helper for invoking Craw4AI CLI jobs."""
-
-    def __init__(self, command_template: str | None, output_dir: Path) -> None:
-        self.command_template = command_template
-        self.output_dir = output_dir
-        self.output_dir.mkdir(parents=True, exist_ok=True)
-
-    def run_job(self, seeds: list[str], mode: str = "url") -> Path:
-        """Execute a Craw4AI job and return the output file path."""
-        if not self.command_template:
-            raise RuntimeError("CRAW4AI_COMMAND not configured")
-
-        with tempfile.NamedTemporaryFile(
-            "w", delete=False, encoding="utf-8"
-        ) as temp_input:
-            for seed in seeds:
-                temp_input.write(seed.strip() + "\n")
-            input_path = Path(temp_input.name)
-
-        timestamp = int(time.time())
-        output_path = self.output_dir / f"craw4ai_{timestamp}.json"
-        command = self.command_template.format(
-            input_file=str(input_path),
-            output_file=str(output_path),
-            mode=mode,
-        )
-
-        try:
-            subprocess.run(
-                shlex.split(command),
-                check=True,
-                capture_output=True,
-                text=True,
-            )
-        finally:
-            input_path.unlink(missing_ok=True)
-
-        if not output_path.exists():
-            raise RuntimeError("Craw4AI did not produce an output file")
-
-        return output_path
-
-
 class KnowledgeIngestionService:
     """Central service for feeding knowledge into the vector store."""
 
@@ -234,10 +186,7 @@ class KnowledgeIngestionService:
             if ingestion_cfg.google_api_key and ingestion_cfg.google_cse_id
             else None
         )
-        self.craw4ai_client = Craw4AIClient(
-            command_template=ingestion_cfg.craw4ai_command,
-            output_dir=ingestion_cfg.craw4ai_output_dir,
-        )
+        # Craw4AI client removed (feature deprecated)
 
     # === Public ingestion methods ===
 
@@ -543,20 +492,7 @@ class KnowledgeIngestionService:
 
         return summary
 
-    def run_and_ingest_craw4ai_job(
-        self, seeds: list[str], mode: str = "url"
-    ) -> IngestionSummary:
-        """Run Craw4AI with provided seeds and ingest the resulting JSON."""
-        if not self.craw4ai_client or not self.settings.ingestion.craw4ai_command:
-            raise RuntimeError("Craw4AI not configured (set CRAW4AI_COMMAND in .env)")
-
-        if mode == "url":
-            blocked = [seed for seed in seeds if not self.is_domain_allowed(seed)]
-            if blocked:
-                raise ValueError(f"Craw4AI seeds not whitelisted: {', '.join(blocked)}")
-
-        output_path = self.craw4ai_client.run_job(seeds, mode=mode)
-        return self.ingest_snapshot_file(output_path)
+    # run_and_ingest_craw4ai_job removed
 
     # === Helpers ===
 

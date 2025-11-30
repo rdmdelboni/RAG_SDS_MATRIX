@@ -56,6 +56,7 @@ class Application(ctk.CTk):
         t_rest = (time.time() - t2) * 1000
         # sds_file_rows: filename -> (status, chemical_name)
         self.sds_file_rows: dict[str, tuple[str, str]] = {}
+        self.selected_sds_files: list[str] = []
 
         # Fixar idioma da UI/relatórios em Português, independentemente do idioma do documento processado
         set_language(self.settings.ui.language or "pt")
@@ -89,12 +90,141 @@ class Application(ctk.CTk):
         )
         logger.info("Application initialized")
 
+        # Install Tkinter callback error hook for better diagnostics
+        self._install_tk_error_hook()
+        # Final layout stabilization: clamp size, release grabs
+        self.after(250, self._finalize_layout)
+
     def _on_window_configure(self, event=None) -> None:
         """Disabled: originally handled window configuration events.
 
         Left as no-op to satisfy existing references without resizing the window.
         """
         return
+
+    # === Diagnostics & Recovery ===
+    def _install_tk_error_hook(self) -> None:
+        """Capture Tkinter callback exceptions into structured logs."""
+        try:
+            import traceback
+            
+            def _hook(exc, val, tb):  # type: ignore[override]
+                logger.error("Tkinter callback error: %s", val)
+                try:
+                    trace = ''.join(traceback.format_exception(exc, val, tb))
+                    logger.debug("Tkinter traceback:\n%s", trace)
+                except Exception:
+                    pass
+            self.report_callback_exception = _hook  # type: ignore[attr-defined]
+        except Exception:
+            pass
+
+    def _release_all_grabs(self) -> None:
+        """Release any stuck grabs from modal dialogs to restore interaction."""
+        try:
+            for w in self.winfo_children():
+                try:
+                    w.grab_release()
+                except Exception:
+                    pass
+        except Exception:
+            pass
+
+    def _finalize_layout(self) -> None:  # pragma: no cover - UI behavior
+        """Clamp window size to screen, ensure no stuck modal grabs."""
+        try:
+            self._release_all_grabs()
+            screen_w = self.winfo_screenwidth()
+            screen_h = self.winfo_screenheight()
+            cur_w = max(1, self.winfo_width())
+            cur_h = max(1, self.winfo_height())
+            # Clamp to 90% if exceeding
+            max_w = int(screen_w * 0.9)
+            max_h = int(screen_h * 0.9)
+            new_w = min(cur_w, max_w)
+            new_h = min(cur_h, max_h)
+            # Center if we shrank
+            x = max(0, (screen_w - new_w) // 2)
+            y = max(0, (screen_h - new_h) // 2)
+            if (new_w, new_h) != (cur_w, cur_h):
+                self.geometry(f"{new_w}x{new_h}+{x}+{y}")
+                logger.info("Clamped window size to %dx%d (screen %dx%d)", new_w, new_h, screen_w, screen_h)
+        except Exception as exc:
+            logger.debug("Finalize layout failed: %s", exc)
+
+    # (Removed duplicate early resize handler; using unified implementation later.)
+
+    # === Styled Dialogs ===
+    def _show_dialog(self, title: str, message: str, *, level: str = "info") -> None:
+        """Show a styled dialog proportional to app window size.
+
+        Args:
+            title: Dialog title
+            message: Dialog body text
+            level: info|warning|error controls accent color
+        """
+        try:
+            win_w = max(self.winfo_width(), self.settings.ui.min_width)
+            win_h = max(self.winfo_height(), self.settings.ui.min_height)
+            dlg_w = int(win_w * 0.5)
+            dlg_h = int(win_h * 0.35)
+
+            accent_map = {
+                "info": self.colors.get("accent", "#6272a4"),
+                "warning": self.colors.get("warning", "#ffb86c"),
+                "error": self.colors.get("error", "#ff5555"),
+            }
+            accent = accent_map.get(level, self.colors.get("accent", "#6272a4"))
+
+            dlg = ctk.CTkToplevel(self)
+            dlg.title(title)
+            dlg.geometry(f"{dlg_w}x{dlg_h}")
+            dlg.configure(fg_color=self.colors["surface"])
+            dlg.transient(self)
+            dlg.grab_set()
+
+            # Header
+            header = ctk.CTkFrame(dlg, fg_color=accent, corner_radius=0)
+            header.pack(fill="x")
+            ctk.CTkLabel(
+                header,
+                text=title,
+                text_color=self.colors["header"],
+                font=("Segoe UI", 16, "bold"),
+            ).pack(padx=16, pady=10, anchor="w")
+
+            # Body
+            body = ctk.CTkTextbox(dlg, fg_color=self.colors["input"], text_color=self.colors["text"])
+            body.pack(fill="both", expand=True, padx=16, pady=12)
+            body.insert("1.0", message)
+            body.configure(state="disabled")
+
+            # Actions
+            actions = ctk.CTkFrame(dlg, fg_color="transparent")
+            actions.pack(fill="x", padx=16, pady=12)
+            ctk.CTkButton(
+                actions,
+                text="OK",
+                fg_color=accent,
+                text_color=self.colors["header"],
+                corner_radius=6,
+                font=self.button_font,
+                command=dlg.destroy,
+            ).pack(side="right")
+        except Exception:
+            # Fallback to native messagebox
+            if level == "warning":
+                messagebox.showwarning(title, message, parent=self)
+            elif level == "error":
+                messagebox.showerror(title, message, parent=self)
+            else:
+                messagebox.showinfo(title, message, parent=self)
+
+    def _show_info(self, title: str, message: str) -> None:
+        self._show_dialog(title, message, level="info")
+
+    def _show_warning(self, title: str, message: str) -> None:
+        self._show_dialog(title, message, level="warning")
 
     def _center_window(self) -> None:
         """Center the window using configured dimensions without further resizing."""
@@ -104,16 +234,22 @@ class Application(ctk.CTk):
             target_w = int(self.settings.ui.window_width)
             target_h = int(self.settings.ui.window_height)
             x = max(0, (screen_w - target_w) // 2)
-            y = max(0, (screen_h - target_h) // 2)
+            # Ensure at least 20px from the top edge
+            y = max(20, (screen_h - target_h) // 2)
             self.geometry(f"{target_w}x{target_h}+{x}+{y}")
         except Exception:
             pass
 
     def _setup_ui(self) -> None:
         """Setup main UI components."""
-        # Main container
-        self.main_frame = ctk.CTkFrame(self, fg_color="transparent")
+        # Main scrollable container for vertical overflow support
+        self.main_frame = ctk.CTkScrollableFrame(
+            self,
+            fg_color="transparent",
+            corner_radius=0,
+        )
         self.main_frame.pack(fill="both", expand=True, padx=8, pady=8)
+        self.enable_auto_scroll = True
 
         # Header bar with title and Exit button
         self._setup_header_bar()
@@ -147,9 +283,12 @@ class Application(ctk.CTk):
         self.tab_view.add("Status")
         self.tab_view.add("Chat")
 
-
-        # Center window once after UI is built
-        self.after(50, self._center_window)
+        # Center window once after UI is built (only if no saved state)
+        def center_if_needed():
+            if not getattr(self.window_manager, 'state_was_restored', False):
+                self._center_window()
+        
+        self.after(50, center_if_needed)
         # Setup tab contents (placeholders for now)
         self._setup_rag_tab()
         self._setup_sources_tab()
@@ -169,8 +308,11 @@ class Application(ctk.CTk):
         # Bind resize to adapt scaling for screen/window ratio
         self._last_size = (self.winfo_width(), self.winfo_height())
         self._last_scale_update = time.time()
-        # Disable automatic window resizing behavior
-        # self.bind("<Configure>", self._on_window_resize)
+        # Debounce handle id for resize events
+        self._resize_after_id: int | None = None
+        self._pending_resize_dims: tuple[int, int] | None = None
+        # Enable automatic window resizing behavior (responsive scaling)
+        self.bind("<Configure>", self._on_window_resize)
 
     def _check_tab_change(self) -> None:
         """Poll for tab selection changes and refresh SDS banner when needed."""
@@ -199,6 +341,11 @@ class Application(ctk.CTk):
         This adjusts both widget sizes and text for better fit across resolutions.
         """
         try:
+            # Safety: allow disabling all dynamic scaling
+            if getattr(self.settings.ui, "disable_scaling", False):
+                if initial:
+                    logger.info("UI scaling disabled via settings")
+                return
             screen_w = self.winfo_screenwidth()
             screen_h = self.winfo_screenheight()
             # Prefer provided width/height (e.g., current window), else screen-based
@@ -222,7 +369,8 @@ class Application(ctk.CTk):
                 scale = min(target_w / base_w, target_h / base_h)
                 # Clamp to range from settings (wider defaults)
                 smin = float(getattr(self.settings.ui, "scale_min", 0.75) or 0.75)
-                smax = float(getattr(self.settings.ui, "scale_max", 1.75) or 1.75)
+                # Force stricter upper bound to avoid giant UI exceeding screen
+                smax = min(1.40, float(getattr(self.settings.ui, "scale_max", 1.75) or 1.75))
                 if smin > smax:
                     smin, smax = smax, smin
                 scale = max(smin, min(scale, smax))
@@ -251,27 +399,45 @@ class Application(ctk.CTk):
             logger.debug("Failed to apply UI scaling: %s", exc)
 
     def _on_window_resize(self, event) -> None:
-        """Recompute scaling on significant window size changes."""
+        """Debounced resize handler: schedules scaling after user stops resizing."""
         try:
-            # Only handle top-level window resize events
             if event.widget is not self:
                 return
             w, h = event.width, event.height
-            prev_w, prev_h = getattr(self, "_last_size", (w, h))
-            # Avoid division by zero
-            prev_w = max(prev_w, 1)
-            prev_h = max(prev_h, 1)
-            dw = abs(w - prev_w) / prev_w
-            dh = abs(h - prev_h) / prev_h
-
-            now = time.time()
-            # Update scaling only on notable change and throttle updates
-            if (dw > 0.15 or dh > 0.15) and (now - getattr(self, "_last_scale_update", 0) > 0.5):
-                self._apply_ui_scaling(initial=False, width=w, height=h)
-                self._last_scale_update = now
-                self._last_size = (w, h)
+            # Ignore spurious events with zero dimensions
+            if w <= 1 or h <= 1:
+                return
+            self._pending_resize_dims = (w, h)
+            # Cancel previous scheduled resize
+            if self._resize_after_id is not None:
+                try:
+                    self.after_cancel(self._resize_after_id)
+                except Exception:
+                    pass
+            # Schedule apply after short idle (user finished dragging)
+            debounce_ms = int(getattr(self.settings.ui, "resize_debounce_ms", 300) or 300)
+            self._resize_after_id = self.after(debounce_ms, self._apply_debounced_resize)
         except Exception:
             pass
+
+    def _apply_debounced_resize(self) -> None:
+        """Apply UI scaling from the last recorded dimensions (debounced)."""
+        dims = getattr(self, "_pending_resize_dims", None)
+        if not dims:
+            return
+        try:
+            w, h = dims
+            prev_w, prev_h = getattr(self, "_last_size", (w, h))
+            # Only apply if changed meaningfully (>=10px either dimension)
+            if abs(w - prev_w) < 10 and abs(h - prev_h) < 10:
+                return
+            self._apply_ui_scaling(initial=False, width=w, height=h)
+            self._last_size = (w, h)
+            self._last_scale_update = time.time()
+        except Exception:
+            pass
+        finally:
+            self._resize_after_id = None
 
     def _setup_header_bar(self) -> None:
         """Top header with app title and close button."""
@@ -318,14 +484,16 @@ class Application(ctk.CTk):
 
             # Center on screen
             x = max(0, (screen_w - target_w) // 2)
-            y = max(0, (screen_h - target_h) // 2)
+            # Ensure at least 20px from the top edge
+            y = max(20, (screen_h - target_h) // 2)
 
             self.geometry(f"{target_w}x{target_h}+{x}+{y}")
         except Exception:
             # Fallback to configured size
-            self.geometry(
-                f"{self.settings.ui.window_width}x{self.settings.ui.window_height}"
-            )
+            w = int(self.settings.ui.window_width)
+            h = int(self.settings.ui.window_height)
+            # Place fallback at least 20px from top
+            self.geometry(f"{w}x{h}+0+20")
 
     def _setup_rag_tab(self) -> None:
         """Setup RAG Knowledge Base tab."""
@@ -608,29 +776,7 @@ class Application(ctk.CTk):
         thread.daemon = True
         thread.start()
 
-    def _on_craw4ai_run(self) -> None:
-        """Run Craw4AI job and ingest results."""
-        seeds = [
-            line.strip()
-            for line in self.craw_seeds_text.get("1.0", END).splitlines()
-            if line.strip()
-        ]
-        if not seeds:
-            messagebox.showwarning("No Seeds", "Enter one or more seed URLs.")
-            return
-        if not self.settings.ingestion.craw4ai_command:
-            messagebox.showwarning(
-                "Craw4AI Not Configured",
-                "Set CRAW4AI_COMMAND in your .env (e.g., 'crawl4ai run --mode {mode} --input {input_file} --output {output_file}').",
-            )
-            return
-        self.sources_status_var.set("Running Craw4AI...")
-        thread = threading.Thread(target=self._craw4ai_run_async, args=(seeds,))
-        thread.daemon = True
-        thread.start()
-
     # === Knowledge ingestion workers ===
-
     def _ingest_files_async(self, files: tuple[str, ...]) -> None:
         summary = self.ingestion.ingest_local_files([Path(f) for f in files])
         self.after(0, lambda: self._handle_ingestion_summary(summary))
@@ -688,15 +834,7 @@ class Application(ctk.CTk):
             self.after(0, lambda: self.sources_status_var.set(err))
             self.after(0, lambda e=err: messagebox.showerror("Bright Data Error", e))
 
-    def _craw4ai_run_async(self, seeds: list[str]) -> None:
-        try:
-            summary = self.ingestion.run_and_ingest_craw4ai_job(seeds)
-            self.after(0, lambda: self._handle_ingestion_summary(summary))
-        except Exception as exc:
-            logger.error("Craw4AI run failed: %s", exc)
-            err = str(exc)
-            self.after(0, lambda: self.sources_status_var.set(err))
-            self.after(0, lambda e=err: messagebox.showerror("Craw4AI Error", e))
+    # Craw4AI handlers removed (feature deprecated)
 
     def _parse_bright_keywords(self) -> list[tuple[str, int]]:
         """Parse the keywords textbox into (keyword, pages) tuples."""
@@ -746,6 +884,8 @@ class Application(ctk.CTk):
         if folder:
             logger.info("Selected folder: %s", folder)
             self.selected_sds_folder = folder
+            # Reset any previous manual selections
+            self.selected_sds_files = []
 
             # Scan and list SDS files
             sds_files = list(Path(folder).rglob("*.pdf")) + list(
@@ -763,15 +903,117 @@ class Application(ctk.CTk):
             self.sds_progress_text.configure(text=f"Ready: {file_count} files")
             self._reset_sds_file_table(sds_files)
 
-    def _on_process(self) -> None:
-        """Handle process button."""
+    def _on_choose_files(self) -> None:
+        """Open a dialog to choose which SDS files to process.
+
+        Provides Select All / Unselect All controls and individual checkboxes.
+        """
         if not hasattr(self, "selected_sds_folder"):
             messagebox.showwarning("No Folder Selected", "Please select a folder first")
             return
 
+        folder_path = Path(self.selected_sds_folder)
+        sds_files = sorted(list(folder_path.rglob("*.pdf")) + list(folder_path.rglob("*.txt")))
+        if not sds_files:
+            messagebox.showinfo("No Files", "No SDS files found in the selected folder.")
+            return
+
+        # Create selection window
+        win = ctk.CTkToplevel(self)
+        win.title("Select SDS Files")
+        win.geometry("700x500")
+
+        # Top controls
+        ctrl_frame = ctk.CTkFrame(win, fg_color=self.colors["surface"])
+        ctrl_frame.pack(fill="x", padx=10, pady=(10, 0))
+
+        def select_all():
+            for var in checkbox_vars.values():
+                var.set(True)
+
+        def unselect_all():
+            for var in checkbox_vars.values():
+                var.set(False)
+
+        ctk.CTkButton(
+            ctrl_frame,
+            text="Select All",
+            fg_color=self.colors.get("success", "#50fa7b"),
+            text_color=self.colors["header"],
+            corner_radius=4,
+            font=self.button_font_sm,
+            command=select_all,
+        ).pack(side="left", padx=6, pady=6)
+
+        ctk.CTkButton(
+            ctrl_frame,
+            text="Unselect All",
+            fg_color=self.colors.get("error", "#ff5555"),
+            text_color=self.colors["header"],
+            corner_radius=4,
+            font=self.button_font_sm,
+            command=unselect_all,
+        ).pack(side="left", padx=6, pady=6)
+
+        # Scrollable list of checkboxes
+        scroll = ctk.CTkScrollableFrame(win, fg_color=self.colors["surface"], corner_radius=8)
+        scroll.pack(fill="both", expand=True, padx=10, pady=10)
+
+        checkbox_vars: dict[Path, ctk.BooleanVar] = {}
+        preselected_names = set(self.selected_sds_files) if hasattr(self, "selected_sds_files") else set()
+        for f in sds_files:
+            var = ctk.BooleanVar(value=(not preselected_names or (f.name in preselected_names)))
+            cb = ctk.CTkCheckBox(
+                scroll,
+                text=f.name,
+                variable=var,
+                text_color=self.colors["text"],
+                font=("JetBrains Mono", 12),
+            )
+            cb.pack(anchor="w", padx=8, pady=4)
+            checkbox_vars[f] = var
+
+        # Bottom buttons
+        btns = ctk.CTkFrame(win, fg_color="transparent")
+        btns.pack(fill="x", padx=10, pady=(0, 10))
+
+        def apply_selection():
+            selected = [f.name for f, v in checkbox_vars.items() if v.get()]
+            self.selected_sds_files = selected
+            # Reflect selection in table
+            self._reset_sds_file_table([folder_path / name for name in selected] if selected else sds_files)
+            self._update_status(f"Selected {len(selected) if selected else len(sds_files)} files", level="info")
+            win.destroy()
+
+        ctk.CTkButton(
+            btns,
+            text="Apply",
+            fg_color=self.colors.get("primary", "#6272a4"),
+            text_color=self.colors["header"],
+            corner_radius=4,
+            font=self.button_font,
+            command=apply_selection,
+        ).pack(side="left", padx=6, pady=6)
+
+        ctk.CTkButton(
+            btns,
+            text="Cancel",
+            fg_color=self.colors.get("surface", "#44475a"),
+            text_color=self.colors["header"],
+            corner_radius=4,
+            font=self.button_font,
+            command=win.destroy,
+        ).pack(side="left", padx=6, pady=6)
+
+    def _on_process(self) -> None:
+        """Handle process button."""
+        if not hasattr(self, "selected_sds_folder"):
+            self._show_warning("No Folder Selected", "Please select a folder first")
+            return
+
         stats = self.db.get_statistics()
         if stats.get("rag_chunks", 0) == 0:
-            messagebox.showwarning(
+            self._show_warning(
                 "Knowledge Base Empty",
                 "Please ingest knowledge sources (files, URLs, or snapshots) before processing SDS files.",
             )
@@ -827,15 +1069,27 @@ class Application(ctk.CTk):
 
         try:
             if not self.sds_file_rows:
-                self.sds_files_table.set_data(
-                    ["Arquivo", "Composto Químico", "Status"],
-                    [("Nenhum arquivo", "", "")]
-                )
+                if getattr(self.sds_files_table, "checkbox_column", False):
+                    self.sds_files_table.set_data(
+                        ["Sel", "Arquivo", "Composto Químico", "Status"],
+                        [["", "Nenhum arquivo", "", ""]]
+                    )
+                else:
+                    self.sds_files_table.set_data(
+                        ["Arquivo", "Composto Químico", "Status"],
+                        [("Nenhum arquivo", "", "")]
+                    )
                 return
-            rows = [(name, chemical_name, status) for name, (status, chemical_name) in self.sds_file_rows.items()]
-            self.sds_files_table.set_data(
-                ["Arquivo", "Composto Químico", "Status"], rows, accent_color=self.colors["accent"]
-            )
+            if getattr(self.sds_files_table, "checkbox_column", False):
+                rows = [["", name, chemical_name, status] for name, (status, chemical_name) in self.sds_file_rows.items()]
+                self.sds_files_table.set_data(
+                    ["Sel", "Arquivo", "Composto Químico", "Status"], rows, accent_color=self.colors["accent"]
+                )
+            else:
+                rows = [(name, chemical_name, status) for name, (status, chemical_name) in self.sds_file_rows.items()]
+                self.sds_files_table.set_data(
+                    ["Arquivo", "Composto Químico", "Status"], rows, accent_color=self.colors["accent"]
+                )
         except Exception as exc:  # pragma: no cover - UI best effort
             logger.debug("Failed to render SDS file table: %s", exc)
 
@@ -855,14 +1109,18 @@ class Application(ctk.CTk):
 
             # Get SDS files
             folder_path = Path(folder)
-            sds_files = sorted(
-                list(folder_path.rglob("*.pdf")) + list(folder_path.rglob("*.txt"))
-            )
+            # Use selected files if present; otherwise include all in folder
+            if hasattr(self, "selected_sds_files") and self.selected_sds_files:
+                sds_files = [folder_path / name for name in self.selected_sds_files]
+            else:
+                sds_files = sorted(
+                    list(folder_path.rglob("*.pdf")) + list(folder_path.rglob("*.txt"))
+                )
 
             if not sds_files:
                 error_msg = "No SDS files found in selected folder"
                 self.after(0, lambda: self.status_text.configure(text=error_msg))
-                self.after(0, lambda: messagebox.showwarning("No Files", error_msg))
+                self.after(0, lambda: self._show_warning("No Files", error_msg))
                 return
 
             total_files = len(sds_files)

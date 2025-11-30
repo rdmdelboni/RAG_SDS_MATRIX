@@ -67,6 +67,7 @@ class WindowManager:
         self.settings = settings or get_settings()
         self.state_file = Path(self.settings.paths.data_dir) / ".window_state.json"
         self.is_initializing = True
+        self.state_was_restored = False
 
     def initialize(self) -> None:
         """Initialize window positioning and sizing.
@@ -78,6 +79,7 @@ class WindowManager:
             if self._restore_saved_state():
                 logger.info("Restored window state from saved session")
                 self.is_initializing = False
+                self.state_was_restored = True
                 return
 
             # Otherwise use defaults

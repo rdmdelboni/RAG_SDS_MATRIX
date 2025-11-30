@@ -37,7 +37,16 @@ class _StubDb:
             }
         )
 
-    def update_document_status(self, doc_id, status, processing_time=None, error_message=None, is_dangerous=None):
+    def update_document_status(
+        self,
+        doc_id,
+        status,
+        processing_time=None,
+        error_message=None,
+        is_dangerous=None,
+        completeness=None,
+        avg_confidence=None,
+    ):
         self.updated.append(
             {
                 "doc_id": doc_id,
@@ -45,6 +54,8 @@ class _StubDb:
                 "processing_time": processing_time,
                 "error_message": error_message,
                 "is_dangerous": is_dangerous,
+                "completeness": completeness,
+                "avg_confidence": avg_confidence,
             }
         )
 

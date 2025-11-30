@@ -279,51 +279,7 @@ class SourcesTab(ctk.CTkFrame):
             text_color=self.app.colors["subtext"],
         ).pack(anchor="w", pady=(5, 0), padx=10)
 
-        # Craw4AI section
-        craw_frame = TitledFrame(
-            self, "Craw4AI (local crawler)", fg_color=self.app.colors["surface"]
-        )
-        craw_frame.pack(fill="x", padx=20, pady=10)
-
-        ctk.CTkLabel(
-            craw_frame,
-            text="Seeds (one URL per line):",
-            font=("JetBrains Mono", 11),
-            text_color=self.app.colors["subtext"],
-        ).pack(anchor="w", pady=(5, 0), padx=10)
-
-        self.app.craw_seeds_text = ctk.CTkTextbox(
-            craw_frame,
-            fg_color=self.app.colors["input"],
-            text_color=self.app.colors["text"],
-            height=80,
-            border_color=self.app.colors["accent"],
-            border_width=1,
-        )
-        self.app.craw_seeds_text.insert(
-            "1.0",
-            "\n".join(
-                [
-                    "https://www.osha.gov/",
-                    "https://www.cdc.gov/niosh/",
-                    "https://sistemasinter.cetesb.sp.gov.br/produtos/produto_consulta_completa.asp",
-                    "https://cameochemicals.noaa.gov/help/reactivity/reactive_groups.htm",
-                    "https://safescience.cas.org/",
-                    "https://www.cdc.gov/niosh/npg/npgdcas.html",
-                ]
-            ),
-        )
-        self.app.craw_seeds_text.pack(fill="x", pady=5, padx=10)
-
-        AppButton(
-            craw_frame,
-            text="Run Craw4AI Job",
-            command=self.app._on_craw4ai_run,
-            fg_color=self.app.colors["accent"],
-            text_color=self.app.colors["header"],
-            hover_color=self.app.colors["button_hover"],
-            width=200,
-        ).pack(anchor="w", padx=10, pady=10)
+        # Craw4AI section removed (deprecated)
 
         # Status label
         self.app.sources_status_var = ctk.StringVar(

@@ -200,7 +200,7 @@ class MatrixBuilder:
                         "H Statements": result.get("h_statements", ""),
                         "P Statements": result.get("p_statements", ""),
                         "Completeness": result.get("completeness", 0.0),
-                        "Confidence": result.get("confidence", 0.0),
+                        "Confidence": result.get("avg_confidence", result.get("confidence", 0.0)),
                     }
                 )
 

@@ -3,6 +3,10 @@
 from __future__ import annotations
 
 import re
+import shutil
+import subprocess
+import tempfile
+import logging
 from pathlib import Path
 from typing import Any
 
@@ -12,6 +16,23 @@ from ..config.settings import get_settings
 from ..utils.logger import get_logger
 
 logger = get_logger(__name__)
+
+
+class _WarningCounter(logging.Handler):
+    """Count specific warning messages emitted during PDF parsing."""
+
+    def __init__(self, substring: str):
+        super().__init__(level=logging.WARNING)
+        self.substring = substring
+        self.count = 0
+
+    def emit(self, record: logging.LogRecord) -> None:
+        try:
+            msg = record.getMessage()
+        except Exception:
+            msg = record.msg
+        if self.substring in str(msg):
+            self.count += 1
 
 
 class SDSExtractor:
@@ -52,8 +73,23 @@ class SDSExtractor:
         page_count = 0
         blank_pages = 0
 
+        preprocess_tmp: Path | None = None
+        input_path = file_path
+        warning_counter = _WarningCounter("Cannot set gray non-stroke color")
+        pdfminer_logger = logging.getLogger("pdfminer")
+        pdfminer_logger.addHandler(warning_counter)
+
         try:
-            with pdfplumber.open(file_path) as pdf:
+            settings = get_settings()
+            if settings.processing.pdf_preprocess_enabled:
+                preprocess_tmp = self._preprocess_pdf(file_path, settings.processing.pdf_preprocess_engine)
+                if preprocess_tmp:
+                    input_path = preprocess_tmp
+        except Exception as exc:
+            logger.debug("PDF preprocess skipped due to error: %s", exc)
+
+        try:
+            with pdfplumber.open(input_path) as pdf:
                 page_count = len(pdf.pages)
 
                 for page_num, page in enumerate(pdf.pages, 1):
@@ -76,6 +112,13 @@ class SDSExtractor:
         except Exception as e:
             logger.error("PDF extraction failed: %s", e)
             raise
+        finally:
+            if preprocess_tmp:
+                try:
+                    Path(preprocess_tmp).unlink(missing_ok=True)
+                except Exception:
+                    pass
+            pdfminer_logger.removeHandler(warning_counter)
 
         full_text = "\n".join(text_parts)
 
@@ -109,6 +152,21 @@ class SDSExtractor:
                         )
                 except Exception as exc:  # pragma: no cover - best effort
                     logger.warning("Full OCR fallback failed: %s", exc)
+            # Trigger OCR if pdfminer logged many graphics warnings
+            warn_threshold = settings.processing.pdf_graphics_warning_threshold
+            if warn_threshold > 0 and warning_counter.count >= warn_threshold:
+                logger.info(
+                    "Triggering OCR fallback due to %d PDF graphics warnings (threshold=%d)",
+                    warning_counter.count,
+                    warn_threshold,
+                )
+                try:
+                    ocr_text = self._ocr_pdf_full(file_path)
+                    if ocr_text and len(ocr_text.strip()) > len(full_text.strip()) * 0.5:
+                        full_text = ocr_text
+                        logger.info("Full OCR fallback used after graphics warnings")
+                except Exception as exc:  # pragma: no cover
+                    logger.warning("OCR fallback after graphics warnings failed: %s", exc)
         except Exception as exc:  # pragma: no cover
             logger.debug("OCR fallback decision failed: %s", exc)
 
@@ -117,6 +175,48 @@ class SDSExtractor:
             "page_count": page_count,
             "sections": self._extract_sections(full_text),
         }
+
+    def _preprocess_pdf(self, file_path: Path, engines: str) -> Path | None:
+        """Optionally normalize PDFs (flatten patterns) before pdfplumber parses them."""
+        engine_list = [e.strip() for e in engines.split(",") if e.strip()]
+        for engine in engine_list:
+            if engine.lower() in ("gs", "ghostscript"):
+                bin_name = shutil.which("gs") or shutil.which("ghostscript")
+                if not bin_name:
+                    continue
+                tmp = Path(tempfile.mkstemp(suffix=".pdf")[1])
+                cmd = [
+                    bin_name,
+                    "-sDEVICE=pdfwrite",
+                    "-dNOPAUSE",
+                    "-dBATCH",
+                    "-dSAFER",
+                    "-dCompatibilityLevel=1.7",
+                    "-sOutputFile=%s" % tmp,
+                    str(file_path),
+                ]
+                try:
+                    subprocess.run(cmd, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+                    logger.info("PDF preprocessed via ghostscript: %s", tmp.name)
+                    return tmp
+                except Exception as exc:
+                    logger.debug("Ghostscript preprocess failed: %s", exc)
+                    tmp.unlink(missing_ok=True)
+            if engine.lower() == "qpdf":
+                bin_name = shutil.which("qpdf")
+                if not bin_name:
+                    continue
+                tmp = Path(tempfile.mkstemp(suffix=".pdf")[1])
+                cmd = [bin_name, "--stream-data=preserve", "--object-streams=preserve", str(file_path), str(tmp)]
+                try:
+                    subprocess.run(cmd, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+                    logger.info("PDF preprocessed via qpdf: %s", tmp.name)
+                    return tmp
+                except Exception as exc:
+                    logger.debug("qpdf preprocess failed: %s", exc)
+                    tmp.unlink(missing_ok=True)
+
+        return None
 
     def _ocr_page(self, page: Any) -> str:
         """Extract text from page using OCR.

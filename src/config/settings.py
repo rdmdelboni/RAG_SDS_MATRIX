@@ -81,6 +81,24 @@ class ProcessingConfig:
         default_factory=lambda: os.getenv("OCR_FALLBACK_ENABLED", "true").lower()
         in ("true", "1", "yes")
     )
+    # PDF handling
+    pdf_preprocess_enabled: bool = field(
+        default_factory=lambda: os.getenv("PDF_PREPROCESS_ENABLED", "false").lower()
+        in ("true", "1", "yes")
+    )
+    pdf_preprocess_engine: str = field(
+        default_factory=lambda: os.getenv("PDF_PREPROCESS_ENGINE", "ghostscript,qpdf")
+    )
+    pdf_graphics_warning_threshold: int = field(
+        default_factory=lambda: int(os.getenv("PDF_GRAPHICS_WARNING_THRESHOLD", "20"))
+    )
+    pdf_preprocess_enabled: bool = field(
+        default_factory=lambda: os.getenv("PDF_PREPROCESS_ENABLED", "false").lower()
+        in ("true", "1", "yes")
+    )
+    pdf_preprocess_engine: str = field(
+        default_factory=lambda: os.getenv("PDF_PREPROCESS_ENGINE", "ghostscript,qpdf")
+    )
 
 
 @dataclass(frozen=True)
@@ -137,6 +155,15 @@ class UIConfig:
     scale_max: float = field(
         default_factory=lambda: float(os.getenv("UI_SCALE_MAX", "1.75"))
     )
+    # Disable all dynamic UI scaling (use toolkit defaults)
+    disable_scaling: bool = field(
+        default_factory=lambda: os.getenv("UI_DISABLE_SCALING", "false").lower()
+        in ("true", "1", "yes")
+    )
+    # Debounce interval (ms) for resize events before applying scaling
+    resize_debounce_ms: int = field(
+        default_factory=lambda: int(os.getenv("UI_RESIZE_DEBOUNCE_MS", "300"))
+    )
 
 
 @dataclass(frozen=True)
@@ -173,21 +200,13 @@ class IngestionConfig:
         )
         or tuple(sorted(DEFAULT_MRLP_ALLOWED_DOMAINS))
     )
-    craw4ai_command: str | None = field(
-        default_factory=lambda: os.getenv("CRAW4AI_COMMAND")
-    )
-    craw4ai_output_dir: Path = field(
-        default_factory=lambda: Path(
-            os.getenv("CRAW4AI_OUTPUT_DIR", DATA_DIR / "craw4ai")
-        )
-    )
 
     def ensure_directories(self) -> None:
         """Create ingestion-related directories."""
         self.dataset_storage_dir.mkdir(parents=True, exist_ok=True)
         if self.snapshot_storage_file:
             self.snapshot_storage_file.parent.mkdir(parents=True, exist_ok=True)
-        self.craw4ai_output_dir.mkdir(parents=True, exist_ok=True)
+        # Craw4AI directory removed (feature deprecated)
 
 
 @dataclass

@@ -11,7 +11,7 @@ Features:
 
 from __future__ import annotations
 
-from typing import Iterable, Sequence
+from typing import Iterable, Sequence, Callable, List
 
 import customtkinter as ctk
 from tkinter import Canvas, Frame, Scrollbar, Label
@@ -34,6 +34,8 @@ class SimpleTable(ctk.CTkFrame):
         header_font: tuple = ("JetBrains Mono", 16, "bold"),
         row_height: int = 50,
         min_col_width: int = 80,
+        checkbox_column: bool = False,
+        on_selection_change: Callable[[List[str]], None] | None = None,
         **kwargs,
     ) -> None:
         super().__init__(master, fg_color=fg_color, **kwargs)
@@ -52,13 +54,20 @@ class SimpleTable(ctk.CTkFrame):
         self.col_widths: dict[int, int] = {}
         self._v_scrollbar_visible = False
         self._resizing = False
-        self._resize_column_idx = None
-        self._resize_start_x = None
-        self._resize_start_width = None
+        self._resize_column_idx: int | None = None
+        self._resize_start_x: int | None = None
+        self._resize_start_width: int | None = None
         # Store all cell labels for dynamic updates during resize
         self._cell_labels: dict[tuple[int, int], Label] = {}  # (row, col) -> Label widget
 
+        # Selection related
+        self.checkbox_column = checkbox_column
+        self.on_selection_change = on_selection_change
+        self._row_selection_vars: list[ctk.BooleanVar] = []
+        self._selection_suspended = False  # Prevent callback storm during bulk ops
+
         self._create_widgets()
+        self._last_total_width: int | None = None
 
     def _create_widgets(self) -> None:
         """Create the table structure with smart scrollbars."""
@@ -108,7 +117,7 @@ class SimpleTable(ctk.CTkFrame):
         self.table_frame.bind("<Configure>", self._on_frame_configure)
 
     def _on_v_scroll(self, *args) -> None:
-        """Handle vertical scrollbar visibility."""
+        """Handle vertical scrollbar visibility and position updates."""
         if args and len(args) >= 2:
             start, end = float(args[0]), float(args[1])
             needs_scrollbar = start > 0 or end < 1
@@ -118,6 +127,8 @@ class SimpleTable(ctk.CTkFrame):
             elif not needs_scrollbar and self._v_scrollbar_visible:
                 self.v_scrollbar.pack_forget()
                 self._v_scrollbar_visible = False
+            # Update scrollbar position
+            self.v_scrollbar.set(*args)
 
     def _on_frame_configure(self, event=None) -> None:
         """Update scroll region when frame changes."""
@@ -125,10 +136,14 @@ class SimpleTable(ctk.CTkFrame):
 
     def _on_mousewheel(self, event) -> None:
         """Handle mouse wheel scrolling."""
-        if event.num == 5 or event.delta < 0:
-            self.canvas.yview_scroll(3, "units")
-        elif event.num == 4 or event.delta > 0:
-            self.canvas.yview_scroll(-3, "units")
+        try:
+            if event.num == 5 or event.delta < 0:
+                self.canvas.yview_scroll(1, "units")
+            elif event.num == 4 or event.delta > 0:
+                self.canvas.yview_scroll(-1, "units")
+        except Exception:
+            # Ignore scrolling errors when canvas not yet configured
+            pass
 
     def set_data(
         self,
@@ -158,9 +173,25 @@ class SimpleTable(ctk.CTkFrame):
         # Create header row
         self._create_header_row()
 
+        # Prepare selection vars if checkbox column
+        self._row_selection_vars.clear()
+
         # Create data rows
-        for row in self.rows:
-            self._create_data_row(row)
+        for idx, row in enumerate(self.rows):
+            self._create_data_row(idx, row)
+
+        # Default: all selected when checkbox column enabled
+        if self.checkbox_column and self._row_selection_vars:
+            self._selection_suspended = True
+            for var in self._row_selection_vars:
+                var.set(True)
+            self._selection_suspended = False
+            self._emit_selection_change()
+        # Track initial width baseline
+        try:
+            self._last_total_width = self.winfo_width()
+        except Exception:
+            self._last_total_width = None
 
     def _calculate_column_widths(self) -> None:
         """Calculate optimal column widths based on content."""
@@ -171,20 +202,22 @@ class SimpleTable(ctk.CTkFrame):
 
         # Analyze headers
         for i, header in enumerate(self.headers):
-            content_widths[i] = len(header) * 8
+            content_widths[i] = len(header) * 12
 
         # Analyze row content (sample for performance)
-        for row in self.rows[:50]:
+        for row in self.rows[:100]:
             for i, cell in enumerate(row[:col_count]):
-                cell_width = len(str(cell)) * 7
+                cell_width = len(str(cell)) * 10
                 if cell_width > content_widths.get(i, 0):
                     content_widths[i] = cell_width
 
-        # Apply minimum widths and add padding
+        # Apply minimum widths and add padding - auto-expand to content
         for i in range(col_count):
             base_width = content_widths.get(i, self.min_col_width)
-            self.col_widths[i] = max(base_width + 20, self.min_col_width)
-            self.col_widths[i] = min(self.col_widths[i], 450)
+            self.col_widths[i] = max(base_width + 40, self.min_col_width)
+            # Special handling: checkbox column should be narrow
+            if self.checkbox_column and i == 0:
+                self.col_widths[i] = 70
 
     def _create_header_row(self) -> None:
         """Create the header row with resizable columns."""
@@ -207,20 +240,48 @@ class SimpleTable(ctk.CTkFrame):
             )
             col_frame.pack(side="left", fill="both", expand=False, padx=0, pady=0)
             col_frame.pack_propagate(False)
-            col_frame.col_index = i
+            col_frame.col_index = i  # type: ignore[attr-defined]
 
-            header_label = Label(
-                col_frame,
-                text=header,
-                bg=self.header_color,
-                fg=self.text_color,
-                font=self.header_font,
-                anchor="w",
-                padx=12,
-                pady=8,
-                wraplength=col_width - 24,
-            )
-            header_label.pack(side="left", fill="both", expand=True)
+            if self.checkbox_column and i == 0:
+                # Master select/unselect all as a button-like label
+                master_label = Label(
+                    col_frame,
+                    text=header or "Sel",
+                    bg=self.header_color,
+                    fg=self.text_color,
+                    font=self.header_font,
+                    anchor="w",
+                    padx=12,
+                    pady=8,
+                    wraplength=col_width - 24,
+                    cursor="hand2",
+                )
+                master_label.pack(side="left", fill="both", expand=True)
+
+                def toggle_master(event=None):  # type: ignore[unused-ignore]
+                    if not self._row_selection_vars:
+                        return
+                    all_selected = all(var.get() for var in self._row_selection_vars)
+                    self._selection_suspended = True
+                    for var in self._row_selection_vars:
+                        var.set(not all_selected)
+                    self._selection_suspended = False
+                    self._emit_selection_change()
+
+                master_label.bind("<Button-1>", toggle_master)
+            else:
+                header_label = Label(
+                    col_frame,
+                    text=header,
+                    bg=self.header_color,
+                    fg=self.text_color,
+                    font=self.header_font,
+                    anchor="w",
+                    padx=12,
+                    pady=8,
+                    wraplength=col_width - 24,
+                )
+                header_label.pack(side="left", fill="both", expand=True)
 
             # Resize handle for all columns
             resize_handle = Label(
@@ -232,13 +293,13 @@ class SimpleTable(ctk.CTkFrame):
             )
             resize_handle.pack(side="right", fill="y", padx=0)
             # Store reference for double-click detection
-            resize_handle.click_count = 0
-            resize_handle.column_idx = i
+            resize_handle.click_count = 0  # type: ignore[attr-defined]
+            resize_handle.column_idx = i  # type: ignore[attr-defined]
             resize_handle.bind("<Button-1>", self._on_handle_click)
             resize_handle.bind("<B1-Motion>", lambda e: self._on_resize_motion(e))
             resize_handle.bind("<ButtonRelease-1>", lambda e: self._end_resize(e))
 
-    def _create_data_row(self, row: list[str]) -> None:
+    def _create_data_row(self, row_index: int, row: list[str]) -> None:
         """Create a data row."""
         row_frame = Frame(
             self.table_frame,
@@ -269,26 +330,174 @@ class SimpleTable(ctk.CTkFrame):
             col_frame.pack(side="left", fill="both", expand=False, padx=0, pady=0)
             col_frame.pack_propagate(False)
 
-            cell_text = str(cell)
-            if len(cell_text) > 100:
-                cell_text = cell_text[:97] + "…"
+            if self.checkbox_column and i == 0:
+                var = ctk.BooleanVar(value=False)
+                cb = ctk.CTkCheckBox(
+                    col_frame,
+                    text="",
+                    variable=var,
+                    fg_color=self.accent_color,
+                    text_color=self.text_color,
+                    font=(self.font[0], self.font[1] - 2),
+                    checkbox_width=28,
+                    checkbox_height=28,
+                )
+                cb.pack(anchor="center", padx=4, pady=4)
+                self._row_selection_vars.append(var)
 
-            cell_label = Label(
-                col_frame,
-                text=cell_text,
-                bg=row_bg,
-                fg=self.text_color,
-                font=self.font,
-                anchor="nw",
-                padx=12,
-                pady=8,
-                wraplength=max(col_width - 24, 20),
-                justify="left",
+                def on_var_change(*_):  # pragma: no cover - UI callback
+                    if self._selection_suspended:
+                        return
+                    self._emit_selection_change()
+
+                var.trace_add("write", on_var_change)
+            else:
+                cell_text = str(cell)
+                if len(cell_text) > 100:
+                    cell_text = cell_text[:97] + "…"
+
+                cell_label = Label(
+                    col_frame,
+                    text=cell_text,
+                    bg=row_bg,
+                    fg=self.text_color,
+                    font=self.font,
+                    anchor="nw",
+                    padx=12,
+                    pady=8,
+                    wraplength=max(col_width - 24, 20),
+                    justify="left",
+                )
+                cell_label.pack(fill="both", expand=True)
+                # Store reference to cell label for dynamic updates during resize
+                self._cell_labels[(current_row_num, i)] = cell_label
+
+    # === Selection Helpers ===
+    def _emit_selection_change(self) -> None:
+        if not self.checkbox_column:
+            return
+        if not self.on_selection_change:
+            return
+        selected_values = self.get_selected_values()
+        try:
+            self.on_selection_change(selected_values)
+        except Exception:
+            pass
+
+    def get_selected_values(self) -> list[str]:
+        if not self.checkbox_column:
+            return []
+        # File name assumed to be second column (index 1) when checkbox column enabled
+        values: list[str] = []
+        for idx, var in enumerate(self._row_selection_vars):
+            if var.get() and idx < len(self.rows):
+                # Safely get file name
+                if len(self.rows[idx]) > 1:
+                    values.append(self.rows[idx][1])
+        return values
+
+    def select_all(self) -> None:
+        if not self.checkbox_column:
+            return
+        self._selection_suspended = True
+        for var in self._row_selection_vars:
+            var.set(True)
+        self._selection_suspended = False
+        self._emit_selection_change()
+
+    def unselect_all(self) -> None:
+        if not self.checkbox_column:
+            return
+        self._selection_suspended = True
+        for var in self._row_selection_vars:
+            var.set(False)
+        self._selection_suspended = False
+        self._emit_selection_change()
+
+    # === Auto-fit on parent resize ===
+    def auto_fit_columns(self) -> None:  # pragma: no cover - UI only
+        """Adjust column widths proportionally when table width changes."""
+        try:
+            current_width = self.winfo_width()
+            if not self.col_widths or not current_width or current_width <= 1:
+                return
+                
+            # Initialize baseline on first call
+            if self._last_total_width is None:
+                self._last_total_width = current_width
+                return
+                
+            delta = abs(current_width - self._last_total_width)
+            # Ignore tiny changes to reduce unnecessary redraws
+            if delta < 40:
+                return
+                
+            ratio = current_width / max(self._last_total_width, 1)
+            # Clamp ratio to reasonable bounds to avoid extreme scaling
+            ratio = max(0.5, min(ratio, 2.0))
+            
+            # Calculate total available width (excluding checkbox column if present)
+            available_width = current_width - 40  # Account for padding/scrollbar
+            if self.checkbox_column:
+                available_width -= 70  # Fixed checkbox column width
+            
+            # Update widths proportionally (skip checkbox column fixed width)
+            total_flexible_width = sum(
+                w for i, w in self.col_widths.items()
+                if not (self.checkbox_column and i == 0)
             )
-            cell_label.pack(fill="both", expand=True)
+            
+            if total_flexible_width > 0:
+                for i, w in list(self.col_widths.items()):
+                    if self.checkbox_column and i == 0:
+                        continue  # Keep checkbox column fixed at 70px
+                    
+                    # Distribute available width proportionally
+                    proportion = w / total_flexible_width
+                    new_w = int(available_width * proportion)
+                    
+                    # Clamp to reasonable bounds
+                    new_w = max(self.min_col_width, min(new_w, int(current_width * 0.7)))
+                    self.col_widths[i] = new_w
+            
+            self._last_total_width = current_width
 
-            # Store reference to cell label for dynamic updates during resize
-            self._cell_labels[(current_row_num, i)] = cell_label
+            # Apply updated widths - only update wraplength, not frame width
+            self._update_column_wraplengths()
+            
+        except Exception:
+            pass
+
+    def _update_column_wraplengths(self) -> None:
+        """Update wraplength for all cell labels based on current column widths."""
+        try:
+            # Update header labels
+            if hasattr(self, 'header_frame') and self.header_frame.winfo_exists():
+                header_children = self.header_frame.winfo_children()
+                for i, col_frame in enumerate(header_children):
+                    if i in self.col_widths:
+                        new_wraplength = max(self.col_widths[i] - 24, 20)
+                        for child in col_frame.winfo_children():
+                            if isinstance(child, Label):
+                                child.configure(wraplength=new_wraplength)
+            
+            # Update data row labels
+            if hasattr(self, 'table_frame') and self.table_frame.winfo_exists():
+                for row_frame in [
+                    w for w in self.table_frame.winfo_children()
+                    if w != getattr(self, 'header_frame', None)
+                ]:
+                    if not row_frame.winfo_exists():
+                        continue
+                    row_children = row_frame.winfo_children()
+                    for i, col_frame in enumerate(row_children):
+                        if i in self.col_widths:
+                            new_wraplength = max(self.col_widths[i] - 24, 20)
+                            for child in col_frame.winfo_children():
+                                if isinstance(child, Label):
+                                    child.configure(wraplength=new_wraplength)
+        except Exception:
+            pass
 
     def _on_handle_click(self, event) -> None:
         """Handle click on resize handle - detect double-click for auto-expand."""
@@ -357,7 +566,7 @@ class SimpleTable(ctk.CTkFrame):
                     if self._resize_column_idx < len(header_children):
                         col_frame = header_children[self._resize_column_idx]
                         if col_frame.winfo_exists():
-                            col_frame.configure(width=new_width)
+                            # Skip direct width configure to prevent Tk callback errors
                             # Update header label wraplength
                             for child in col_frame.winfo_children():
                                 if isinstance(child, Label) and child.winfo_exists():
@@ -376,7 +585,7 @@ class SimpleTable(ctk.CTkFrame):
                         if self._resize_column_idx < len(row_children):
                             col_frame = row_children[self._resize_column_idx]
                             if col_frame.winfo_exists():
-                                col_frame.configure(width=new_width)
+                                # Skip direct width configure to prevent Tk callback errors
                                 # Update cell label wraplength dynamically
                                 for child in col_frame.winfo_children():
                                     if isinstance(child, Label) and child.winfo_exists():
@@ -400,7 +609,7 @@ class SimpleTable(ctk.CTkFrame):
                 return
 
             # Find maximum width needed for this column
-            max_width = 0
+            # (Removed unused local variable 'max_width')
 
             # Check header width
             header = self.headers[col_idx]
@@ -433,7 +642,6 @@ class SimpleTable(ctk.CTkFrame):
                     if col_idx < len(header_children):
                         col_frame = header_children[col_idx]
                         if col_frame.winfo_exists():
-                            col_frame.configure(width=new_width)
                             for child in col_frame.winfo_children():
                                 if isinstance(child, Label) and child.winfo_exists():
                                     child.configure(wraplength=new_wraplength)
@@ -451,7 +659,6 @@ class SimpleTable(ctk.CTkFrame):
                         if col_idx < len(row_children):
                             col_frame = row_children[col_idx]
                             if col_frame.winfo_exists():
-                                col_frame.configure(width=new_width)
                                 for child in col_frame.winfo_children():
                                     if isinstance(child, Label) and child.winfo_exists():
                                         child.configure(wraplength=new_wraplength)

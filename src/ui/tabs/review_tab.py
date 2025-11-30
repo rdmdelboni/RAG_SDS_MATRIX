@@ -185,7 +185,7 @@ class ReviewTab(ctk.CTkFrame):
         try:
             self.app.db.store_extraction(
                 document_id=document_id,
-                field=field_name,
+                field_name=field_name,
                 value=new_value,
                 source="user_correction",
                 confidence=1.0,

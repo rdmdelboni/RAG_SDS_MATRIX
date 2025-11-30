@@ -69,6 +69,8 @@ class SdsTab(ctk.CTkFrame):
             command=self.app._on_select_folder,
         ).pack(side="left", padx=10, pady=10)
 
+        # (Removed separate choose-files dialog in favor of inline selection column)
+
         ctk.CTkButton(
             actions_frame,
             corner_radius=4,
@@ -156,17 +158,79 @@ class SdsTab(ctk.CTkFrame):
         )
         files_frame.pack(fill="both", padx=20, pady=10, expand=True)
 
+        controls_frame = ctk.CTkFrame(files_frame, fg_color="transparent")
+        controls_frame.pack(fill="x", padx=10, pady=(10, 0))
+
+        ctk.CTkButton(
+            controls_frame,
+            text="Selecionar Todos",
+            fg_color=self.app.colors.get("success", "#50fa7b"),
+            text_color=self.app.colors["header"],
+            corner_radius=4,
+            font=self.app.button_font_sm,
+            command=lambda: self._on_select_all_files(),
+        ).pack(side="left", padx=6, pady=6)
+
+        ctk.CTkButton(
+            controls_frame,
+            text="Desmarcar Todos",
+            fg_color=self.app.colors.get("error", "#ff5555"),
+            text_color=self.app.colors["header"],
+            corner_radius=4,
+            font=self.app.button_font_sm,
+            command=lambda: self._on_unselect_all_files(),
+        ).pack(side="left", padx=6, pady=6)
+
         self.app.sds_files_table = SimpleTable(
             files_frame,
-            headers=["Arquivo", "Composto Químico", "Status"],
-            rows=[("Nenhum arquivo selecionado.", "", "")],
+            headers=["Sel", "Arquivo", "Composto Químico", "Status"],
+            rows=[["", "Nenhum arquivo selecionado.", "", ""]],
             fg_color=self.app.colors["input"],
             text_color=self.app.colors["text"],
             header_color=self.app.colors["surface"],
             accent_color=self.app.colors["accent"],
-            min_col_width=100,
+            min_col_width=80,
+            checkbox_column=True,
+            on_selection_change=self._on_file_selection_change,
         )
         self.app.sds_files_table.pack(fill="both", expand=True, padx=10, pady=10)
+        
+        # Bind to parent window resize for auto column fitting
+        def schedule_auto_fit():
+            if hasattr(self.app, "sds_files_table"):
+                self.app.sds_files_table.auto_fit_columns()
+        
+        # Use a debounced resize handler
+        self._resize_timer = None
+
+        def on_configure(event):
+            if self._resize_timer:
+                self.after_cancel(self._resize_timer)
+            self._resize_timer = self.after(200, schedule_auto_fit)
+        
+        self.app.bind("<Configure>", on_configure)
+
+    def _on_file_selection_change(self, selected: list[str]) -> None:
+        """Callback when file selection changes in the table."""
+        try:
+            self.app.selected_sds_files = selected
+            self.app._update_status(f"Selecionados: {len(selected)} arquivos", level="info")
+        except Exception:
+            pass
+
+    def _on_select_all_files(self) -> None:
+        try:
+            if hasattr(self.app, "sds_files_table"):
+                self.app.sds_files_table.select_all()
+        except Exception:
+            pass
+
+    def _on_unselect_all_files(self) -> None:
+        try:
+            if hasattr(self.app, "sds_files_table"):
+                self.app.sds_files_table.unselect_all()
+        except Exception:
+            pass
 
     # === Internal Handlers ===
     def _set_vs_status(self, ready: bool) -> None:
