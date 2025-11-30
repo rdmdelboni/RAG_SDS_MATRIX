@@ -101,12 +101,12 @@ COLORS_DARK: Final[dict[str, str]] = {
     "subtext": CatppuccinMocha.subtext0,  # #a6adc8
     # Accents (Catppuccin Mocha)
     "accent": CatppuccinMocha.teal,  # #94e2d5
-    "primary": CatppuccinMocha.sapphire,  # #74c7ec (darker blue)
-    "primary_hover": CatppuccinMocha.blue,  # #89b4fa (bright blue)
+    "primary": "#4c6ef5",  # darker blue (adjusted from sapphire)
+    "primary_hover": CatppuccinMocha.sapphire,  # #74c7ec (medium blue on hover)
     "success": CatppuccinMocha.green,  # #a6e3a1
     "warning": CatppuccinMocha.yellow,  # #f9e2af
     "error": CatppuccinMocha.red,  # #f38ba8
-    "button_hover": CatppuccinMocha.blue,  # #89b4fa
+    "button_hover": CatppuccinMocha.sapphire,  # #74c7ec
     "button_text": CatppuccinMocha.surface2,  # #585b70 (dark grey)
     # Tabs / trees (Catppuccin Mocha)
     "tab_inactive": CatppuccinMocha.surface0,  # #313244
