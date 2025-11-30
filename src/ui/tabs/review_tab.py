@@ -7,7 +7,8 @@ Allows users to review and edit extracted data from processed PDFs.
 from __future__ import annotations
 
 import threading
-from tkinter import END, messagebox, Toplevel
+import tkinter as tk
+from tkinter import END, messagebox
 from typing import Any, Callable
 
 import customtkinter as ctk
@@ -24,9 +25,11 @@ class ReviewTab(ctk.CTkFrame):
         super().__init__(master)
         self.app = app
         self.current_data: list[dict[str, Any]] = []
+        self._edit_dialogs: list = []  # Keep references to open dialogs
         self._setup_ui()
 
     def _setup_ui(self) -> None:
+        print("[DEBUG] Setting up ReviewTab UI")
         """Setup Review tab UI."""
         # Title
         TitleLabel(
@@ -128,6 +131,7 @@ class ReviewTab(ctk.CTkFrame):
         table_frame.pack(fill="both", expand=True, padx=20, pady=(0, 15))
 
         # Create editable table with cell editing capabilities
+        print("[DEBUG] Creating EditableTable (editable=True)")
         self.results_table = EditableTable(
             table_frame,
             fg_color=self.app.colors["bg"],
@@ -139,7 +143,7 @@ class ReviewTab(ctk.CTkFrame):
             header_font=("JetBrains Mono", 11, "bold"),
             editable=True,
             on_cell_edit=self._on_cell_edit_inline,
-            on_row_double_click=lambda idx: self._on_edit_row(idx),
+            on_row_double_click=self._on_edit_row,
         )
         self.results_table.pack(fill="both", expand=True)
 
@@ -156,33 +160,31 @@ class ReviewTab(ctk.CTkFrame):
         self.after(500, self._on_refresh)
 
     def _on_cell_edit_inline(self, row_idx: int, col_idx: int, new_value: Any) -> None:
-        """Handle inline cell edit from EditableTable."""
+        print(f"[DEBUG] Inline cell edit: row={row_idx}, col={col_idx}, value={new_value}")
         if row_idx >= len(self.current_data):
+            print("[DEBUG] Row index out of range")
             return
 
-        # Map column index to field name
-        headers = ["Filename", "Status", "Product", "CAS", "UN", "Hazard Class", "Confidence", "Actions"]
-        if col_idx >= len(headers) or col_idx < 2:  # Skip Filename and Status columns
-            return
-
-        field_map = {
-            2: "product_name",
-            3: "cas_number",
-            4: "un_number",
-            5: "hazard_class",
+        editable_fields = {
+            3: "product_name",   # Product Name column
+            4: "cas_number",     # CAS column
+            5: "un_number",      # UN column
+            6: "hazard_class",   # Hazard Class column
         }
 
-        field_name = field_map.get(col_idx)
-        if not field_name:
+        if col_idx not in editable_fields:
+            print(f"[DEBUG] Column index {col_idx} not editable or unmapped")
             return
 
-        # Get document ID
+        field_name = editable_fields[col_idx]
+
         document_id = self.current_data[row_idx].get("id")
         if not document_id:
+            print("[DEBUG] No document ID for this row")
             return
 
-        # Save to database
         try:
+            print(f"[DEBUG] Saving {field_name} for doc {document_id} = {new_value}")
             self.app.db.store_extraction(
                 document_id=document_id,
                 field_name=field_name,
@@ -195,15 +197,16 @@ class ReviewTab(ctk.CTkFrame):
                 text=f"✅ Saved {field_name} for document {document_id}"
             )
         except Exception as e:
+            print(f"[DEBUG] Error saving: {e}")
             messagebox.showerror("Error", f"Failed to save: {e}")
 
     def _on_edit_row(self, row_idx: int) -> None:
-        """Handle row double-click - open full edit dialog."""
+        print(f"[DEBUG] Row double-clicked: {row_idx}")
         if 0 <= row_idx < len(self.current_data):
             self._open_edit_dialog(self.current_data[row_idx])
 
     def _on_refresh(self) -> None:
-        """Refresh the table data."""
+        print("[DEBUG] Refreshing data in ReviewTab")
         self.status_label.configure(text="Loading data...")
         thread = threading.Thread(target=self._load_data_async)
         thread.daemon = True
@@ -240,8 +243,9 @@ class ReviewTab(ctk.CTkFrame):
             self.after(0, lambda: messagebox.showerror("Load Error", error_msg))
 
     def _display_results(self, results: list[dict[str, Any]]) -> None:
-        """Display results in the table."""
+        print(f"[DEBUG] Displaying {len(results)} results in table")
         if not results:
+            print("[DEBUG] No data found for table")
             self.status_label.configure(text="No data found")
             self.results_table.set_data(
                 ["File", "Status", "Product", "Actions"],
@@ -249,8 +253,6 @@ class ReviewTab(ctk.CTkFrame):
             )
             return
 
-        # Prepare table data
-        # Add row number as first column and remove obsolete Actions/Edit column
         headers = [
             "#",
             "File",
@@ -260,6 +262,7 @@ class ReviewTab(ctk.CTkFrame):
             "UN",
             "Hazard Class",
             "Confidence",
+            "Edit",
         ]
 
         rows = []
@@ -273,13 +276,11 @@ class ReviewTab(ctk.CTkFrame):
             confidence = result.get("avg_confidence", 0)
             conf_str = f"{confidence * 100:.0f}%" if confidence else "N/A"
 
-            # Truncate long text
             if len(filename) > 30:
                 filename = filename[:27] + "..."
             if len(product) > 25:
                 product = product[:22] + "..."
 
-            # Status emoji
             status_display = {
                 "success": "✅ Success",
                 "partial": "⚠️  Partial",
@@ -295,28 +296,36 @@ class ReviewTab(ctk.CTkFrame):
                 un,
                 hazard,
                 conf_str,
+                "Edit",
             ])
 
-        # Display in table
+        print(f"[DEBUG] Table headers: {headers}")
+        print(f"[DEBUG] First row: {rows[0] if rows else '[]'}")
         self.results_table.set_data(headers, rows, accent_color=self.app.colors["accent"])
 
-        # EditableTable handles double-click through on_row_double_click callback
-
-        # Update status
+        # Bind edit column clicks to open edit dialog (SimpleTable fallback support)
+        edit_col_idx = headers.index("Edit")
+        self.results_table.bind_column_double_click(edit_col_idx, lambda row_idx: self._on_edit_row(row_idx))
         status_msg = f"Showing {len(results)} documents"
         self.status_label.configure(text=status_msg)
 
     def _open_edit_dialog(self, record: dict[str, Any]) -> None:
         """Open an edit dialog for the selected record."""
+        print(f"[DEBUG] _open_edit_dialog called with record id={record.get('id')}")
         # Load full extraction details from database
         document_id = record.get("id")
         if document_id:
+            print(f"[DEBUG] Loading extractions for document {document_id}")
             # Get detailed extractions with context and source
             extractions = self.app.db.get_extractions(document_id)
             record["_extractions_detail"] = extractions
-        
+            print(f"[DEBUG] Loaded {len(extractions) if extractions else 0} extractions")
+
         # Keep reference to prevent garbage collection
-        EditDialog(self, self.app, record, on_save=self._on_save_edits)
+        print(f"[DEBUG] Creating EditDialog")
+        dialog = EditDialog(self, self.app, record, on_save=self._on_save_edits)
+        self._edit_dialogs.append(dialog)
+        print(f"[DEBUG] EditDialog created and stored in references")
 
     def _on_save_edits(self, document_id: int, updated_fields: dict[str, Any]) -> None:
         """Save edited fields back to the database."""
@@ -377,29 +386,58 @@ class EditDialog:
         self.on_save_callback = on_save
         self.field_entries: dict[str, Any] = {}  # Can be CTkEntry or CTkTextbox
         self.confidence_entries: dict[str, ctk.CTkEntry] = {}
+        # Fallback for environments without CTkTextbox
+        self._TextWidget = getattr(ctk, "CTkTextbox", tk.Text)
 
-        # Create dialog window
-        self.dialog = Toplevel(parent)
+        # Create dialog window (fallback to tk.Toplevel if CTk variant unavailable)
+        ToplevelClass = getattr(ctk, "CTkToplevel", tk.Toplevel)
+        try:
+            self.dialog = ToplevelClass(parent)
+        except Exception:
+            self.dialog = tk.Toplevel(parent)
         self.dialog.title(f"Edit: {record.get('filename', 'Unknown')}")
         self.dialog.geometry("800x700")
-        self.dialog.configure(bg=app.colors["bg"])
+        try:
+            self.dialog.configure(fg_color=app.colors["bg"])
+        except Exception:
+            self.dialog.configure(bg=app.colors["bg"])
 
         # Make modal
         self.dialog.transient(parent)
         self.dialog.grab_set()
 
-        self._setup_dialog()
+        try:
+            self._setup_dialog()
+        except Exception as exc:  # pragma: no cover - UI only
+            import traceback
+            self.app.logger.error("Failed to build edit dialog: %s", exc)
+            print(f"[ERROR] EditDialog._setup_dialog failed: {exc}")
+            traceback.print_exc()
+            try:
+                messagebox.showerror("Dialog Error", f"Could not render editor: {exc}")
+            except Exception:
+                pass
+            try:
+                self.dialog.destroy()
+            except Exception:
+                pass
 
     def _setup_dialog(self) -> None:
         """Setup the edit dialog UI."""
+        print(f"[DEBUG] Building EditDialog for record {self.record.get('id')}")
+        self.app.logger.debug("Building EditDialog for record %s", self.record.get("id"))
+
         # Main frame with scrolling
+        print("[DEBUG] Creating main_frame")
         main_frame = ctk.CTkFrame(
             self.dialog,
             fg_color=self.app.colors["bg"],
         )
         main_frame.pack(fill="both", expand=True, padx=10, pady=10)
+        print("[DEBUG] main_frame created and packed")
 
         # Title
+        print("[DEBUG] Creating title_frame")
         title_frame = ctk.CTkFrame(main_frame, fg_color=self.app.colors["header"])
         title_frame.pack(fill="x", padx=0, pady=(0, 10))
 
@@ -409,35 +447,25 @@ class EditDialog:
             font=("JetBrains Mono", 14, "bold"),
             text_color=self.app.colors["text"],
         ).pack(pady=10, padx=15)
+        print("[DEBUG] Title label created")
 
-        # Scrollable content frame
-        canvas = ctk.CTkCanvas(
-            main_frame,
-            bg=self.app.colors["bg"],
-            highlightthickness=0,
-        )
-        scrollbar = ctk.CTkScrollbar(main_frame, command=canvas.yview)
-        canvas.configure(yscrollcommand=scrollbar.set)
-
-        scrollbar.pack(side="right", fill="y")
-        canvas.pack(side="left", fill="both", expand=True)
-
-        content_frame = ctk.CTkFrame(canvas, fg_color=self.app.colors["surface"])
-        canvas_window = canvas.create_window((0, 0), window=content_frame, anchor="nw")
-
-        # Bind scrolling
-        content_frame.bind(
-            "<Configure>",
-            lambda e: canvas.configure(scrollregion=canvas.bbox("all")),
-        )
-
-        # Make canvas expand with content
-        def _configure_canvas(event):
-            canvas.itemconfig(canvas_window, width=event.width)
-
-        canvas.bind("<Configure>", _configure_canvas)
+        # Scrollable content frame (ctk). If this fails, build a plain tk fallback.
+        try:
+            print("[DEBUG] Creating CTkScrollableFrame")
+            content_frame = ctk.CTkScrollableFrame(
+                main_frame,
+                fg_color=self.app.colors["surface"],
+            )
+            content_frame.pack(fill="both", expand=True, padx=0, pady=0)
+            print("[DEBUG] CTkScrollableFrame created and packed")
+        except Exception as exc:  # pragma: no cover - UI only
+            print(f"[DEBUG] CTkScrollableFrame failed: {exc}")
+            self.app.logger.error("CTkScrollableFrame failed: %s", exc)
+            self._build_plain_fallback(main_frame)
+            return
 
         # === Extraction Fields ===
+        print("[DEBUG] Creating field editors")
         fields_to_edit = [
             ("product_name", "Product Name"),
             ("manufacturer", "Manufacturer"),
@@ -451,14 +479,17 @@ class EditDialog:
         ]
 
         for field_name, field_label in fields_to_edit:
+            print(f"[DEBUG] Creating field editor for {field_name}")
             self._create_field_editor(
                 content_frame,
                 field_name,
                 field_label,
                 self.record.get(field_name, ""),
             )
+        print("[DEBUG] All field editors created")
 
         # === Buttons ===
+        print("[DEBUG] Creating button_frame")
         button_frame = ctk.CTkFrame(main_frame, fg_color="transparent")
         button_frame.pack(fill="x", pady=10)
 
@@ -495,103 +526,191 @@ class EditDialog:
             font=("JetBrains Mono", 11),
             width=150,
         ).pack(side="right", padx=10)
+        print("[DEBUG] Dialog setup complete!")
+
+    def _build_plain_fallback(self, parent) -> None:
+        """Render a minimal Tk fallback dialog when CTk widgets fail."""
+        try:
+            for child in parent.winfo_children():
+                child.destroy()
+
+            header = tk.Label(
+                parent,
+                text=f"Edit (fallback): {self.record.get('filename', 'Unknown')}",
+                bg=self.app.colors.get("header", "#333"),
+                fg=self.app.colors.get("text", "#fff"),
+                font=("Arial", 13, "bold"),
+                anchor="w",
+                padx=10,
+                pady=8,
+            )
+            header.pack(fill="x")
+
+            body = tk.Frame(parent, bg=self.app.colors.get("surface", "#222"))
+            body.pack(fill="both", expand=True, padx=10, pady=10)
+
+            for field_name, label in [
+                ("product_name", "Product Name"),
+                ("cas_number", "CAS"),
+                ("un_number", "UN"),
+                ("hazard_class", "Hazard Class"),
+            ]:
+                row = tk.Frame(body, bg=body["bg"])
+                row.pack(fill="x", pady=4)
+                tk.Label(
+                    row,
+                    text=label,
+                    bg=body["bg"],
+                    fg=self.app.colors.get("text", "#fff"),
+                    width=16,
+                    anchor="w",
+                ).pack(side="left")
+                val = tk.Entry(row, bg=self.app.colors.get("input", "#111"), fg=self.app.colors.get("text", "#fff"))
+                val.pack(side="left", fill="x", expand=True, padx=6)
+                val.insert(0, str(self.record.get(field_name, "")))
+                self.field_entries[field_name] = val
+
+            actions = tk.Frame(body, bg=body["bg"])
+            actions.pack(fill="x", pady=10)
+            tk.Button(actions, text="Save", command=self._on_save, bg="#4fd1c5").pack(side="left", padx=5)
+            tk.Button(actions, text="Cancel", command=self.dialog.destroy).pack(side="left", padx=5)
+        except Exception as exc:  # pragma: no cover - UI only
+            self.app.logger.error("Fallback dialog also failed: %s", exc)
 
     def _create_field_editor(
         self, parent, field_name: str, field_label: str, current_value: Any
     ) -> None:
         """Create an editable field in the dialog."""
-        field_frame = ctk.CTkFrame(parent, fg_color="transparent")
-        field_frame.pack(fill="x", padx=15, pady=8)
+        print(f"[DEBUG] _create_field_editor({field_name})")
+        try:
+            field_frame = ctk.CTkFrame(parent, fg_color="transparent")
+            field_frame.pack(fill="x", padx=15, pady=8)
+            print(f"[DEBUG]   - field_frame created")
 
-        # Label with extraction info
-        label_text = field_label
-        
-        # Get extraction details if available
-        extractions_detail = self.record.get("_extractions_detail", {})
-        field_detail = extractions_detail.get(field_name, {})
-        source = field_detail.get("source", "")
-        original_confidence = field_detail.get("confidence", 0)
-        
-        if source:
-            label_text += f" [{source}]"
-        
-        ctk.CTkLabel(
-            field_frame,
-            text=label_text,
-            font=("JetBrains Mono", 11, "bold"),
-            text_color=self.app.colors["text"],
-            anchor="w",
-            width=150,
-        ).pack(side="top", anchor="w", pady=(0, 5))
-        
-        # Show context if available (as hint)
-        context = field_detail.get("context", "")
-        if context and len(context) > 10:
-            context_display = context[:100] + "..." if len(context) > 100 else context
+            # Label with extraction info
+            label_text = field_label
+
+            # Get extraction details if available
+            extractions_detail = self.record.get("_extractions_detail", {})
+            field_detail = extractions_detail.get(field_name, {})
+            source = field_detail.get("source", "")
+            original_confidence = field_detail.get("confidence", 0)
+
+            if source:
+                label_text += f" [{source}]"
+
+            print(f"[DEBUG]   - creating label: {label_text}")
             ctk.CTkLabel(
                 field_frame,
-                text=f"Context: {context_display}",
-                font=("JetBrains Mono", 9),
-                text_color=self.app.colors["subtext"],
+                text=label_text,
+                font=("JetBrains Mono", 11, "bold"),
+                text_color=self.app.colors["text"],
                 anchor="w",
-                wraplength=700,
+                width=150,
             ).pack(side="top", anchor="w", pady=(0, 5))
+            print(f"[DEBUG]   - label packed")
+        except Exception as e:
+            print(f"[DEBUG] _create_field_editor FAILED at field creation: {e}")
+            import traceback
+            traceback.print_exc()
+            raise
 
-        # Input row
-        input_frame = ctk.CTkFrame(field_frame, fg_color="transparent")
-        input_frame.pack(fill="x")
+        try:
+            # Show context if available (as hint)
+            context = field_detail.get("context", "")
+            if context and len(context) > 10:
+                context_display = context[:100] + "..." if len(context) > 100 else context
+                ctk.CTkLabel(
+                    field_frame,
+                    text=f"Context: {context_display}",
+                    font=("JetBrains Mono", 9),
+                    text_color=self.app.colors["subtext"],
+                    anchor="w",
+                    wraplength=700,
+                ).pack(side="top", anchor="w", pady=(0, 5))
+            print(f"[DEBUG]   - context label packed")
 
-        # Value entry (multiline for long fields)
-        if field_name in ["h_statements", "p_statements", "incompatibilities"]:
-            # Text area for long content
-            entry = ctk.CTkTextbox(
+            # Input row
+            print(f"[DEBUG]   - creating input_frame")
+            input_frame = ctk.CTkFrame(field_frame, fg_color="transparent")
+            input_frame.pack(fill="x")
+
+            # Value entry (multiline for long fields)
+            print(f"[DEBUG]   - creating entry widget")
+            if field_name in ["h_statements", "p_statements", "incompatibilities"]:
+                # Text area for long content
+                if self._TextWidget is tk.Text:
+                    entry = self._TextWidget(
+                        input_frame,
+                        height=6,
+                        font=("JetBrains Mono", 10),
+                        bg=self.app.colors["input"],
+                        fg=self.app.colors["text"],
+                        highlightthickness=1,
+                        highlightbackground=self.app.colors["accent"],
+                        relief="flat",
+                        wrap="word",
+                    )
+                else:
+                    entry = self._TextWidget(
+                        input_frame,
+                        height=80,
+                        font=("JetBrains Mono", 10),
+                        fg_color=self.app.colors["input"],
+                        text_color=self.app.colors["text"],
+                        border_color=self.app.colors["accent"],
+                        border_width=1,
+                    )
+                entry.pack(side="left", fill="x", expand=True, padx=(0, 10))
+                try:
+                    entry.insert("1.0", str(current_value or ""))
+                except Exception:
+                    pass
+            else:
+                # Single line entry
+                entry = ctk.CTkEntry(
+                    input_frame,
+                    font=("JetBrains Mono", 10),
+                    fg_color=self.app.colors["input"],
+                    text_color=self.app.colors["text"],
+                    border_color=self.app.colors["accent"],
+                    border_width=1,
+                )
+                entry.pack(side="left", fill="x", expand=True, padx=(0, 10))
+                entry.insert(0, str(current_value or ""))
+
+            print(f"[DEBUG]   - entry widget created")
+            self.field_entries[field_name] = entry
+
+            # Confidence entry
+            print(f"[DEBUG]   - creating confidence entry")
+            conf_label = ctk.CTkLabel(
                 input_frame,
-                height=80,
+                text="Confidence:",
+                font=("JetBrains Mono", 10),
+                text_color=self.app.colors["subtext"],
+            )
+            conf_label.pack(side="left", padx=(0, 5))
+
+            conf_entry = ctk.CTkEntry(
+                input_frame,
+                width=60,
                 font=("JetBrains Mono", 10),
                 fg_color=self.app.colors["input"],
                 text_color=self.app.colors["text"],
-                border_color=self.app.colors["accent"],
-                border_width=1,
             )
-            entry.pack(side="left", fill="x", expand=True, padx=(0, 10))
-            entry.insert("1.0", str(current_value or ""))
-        else:
-            # Single line entry
-            entry = ctk.CTkEntry(
-                input_frame,
-                font=("JetBrains Mono", 10),
-                fg_color=self.app.colors["input"],
-                text_color=self.app.colors["text"],
-                border_color=self.app.colors["accent"],
-                border_width=1,
-            )
-            entry.pack(side="left", fill="x", expand=True, padx=(0, 10))
-            entry.insert(0, str(current_value or ""))
+            conf_entry.pack(side="left")
+            # Show original confidence or default to 1.0 for user corrections
+            conf_display = f"{original_confidence:.2f}" if original_confidence else "1.0"
+            conf_entry.insert(0, conf_display)
 
-        self.field_entries[field_name] = entry
-
-        # Confidence entry
-        conf_label = ctk.CTkLabel(
-            input_frame,
-            text="Confidence:",
-            font=("JetBrains Mono", 10),
-            text_color=self.app.colors["subtext"],
-        )
-        conf_label.pack(side="left", padx=(0, 5))
-
-        conf_entry = ctk.CTkEntry(
-            input_frame,
-            width=60,
-            font=("JetBrains Mono", 10),
-            fg_color=self.app.colors["input"],
-            text_color=self.app.colors["text"],
-        )
-        conf_entry.pack(side="left")
-        # Show original confidence or default to 1.0 for user corrections
-        conf_display = f"{original_confidence:.2f}" if original_confidence else "1.0"
-        conf_entry.insert(0, conf_display)
-
-        self.confidence_entries[field_name] = conf_entry
+            self.confidence_entries[field_name] = conf_entry
+            print(f"[DEBUG]   - field {field_name} complete")
+        except Exception as e:
+            print(f"[DEBUG] _create_field_editor FAILED in rest of function: {e}")
+            import traceback
+            traceback.print_exc()
+            raise
 
     def _on_save(self) -> None:
         """Save the edited fields."""
@@ -600,7 +719,7 @@ class EditDialog:
         for field_name, entry_widget in self.field_entries.items():
             try:
                 # Get value based on widget type
-                if isinstance(entry_widget, ctk.CTkTextbox):
+                if isinstance(entry_widget, self._TextWidget):
                     value = entry_widget.get("1.0", END).strip()
                 else:
                     value = entry_widget.get().strip()
