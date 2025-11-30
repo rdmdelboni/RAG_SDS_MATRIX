@@ -74,15 +74,17 @@ class ChemicalProperties:
 class PubChemEnricher:
     """Enriches SDS extraction data using PubChem API."""
     
-    def __init__(self, cache_ttl: int = 3600):
+    def __init__(self, cache_ttl: int = 3600, timeout: int = 30):
         """
         Initialize PubChem enricher.
         
         Args:
             cache_ttl: Cache time-to-live in seconds
+            timeout: Request timeout in seconds (default: 30)
         """
         self.client = PubChemClient(cache_ttl=cache_ttl)
-        logger.info("PubChem enricher initialized")
+        self.timeout = timeout
+        logger.info(f"PubChem enricher initialized (timeout: {timeout}s)")
     
     def enrich_extraction(
         self,
@@ -413,14 +415,28 @@ class PubChemEnricher:
         
         # Molecular weight
         if properties.molecular_weight:
-            enrichments["molecular_weight"] = EnrichmentResult(
-                field_name="molecular_weight",
-                original_value=extractions.get("molecular_weight", {}).get("value"),
-                enriched_value=f"{properties.molecular_weight:.2f} g/mol",
-                confidence=0.95,
-                validation_status="enriched",
-                additional_data={"numeric_value": properties.molecular_weight}
-            )
+            # Convert to float if it's a string
+            try:
+                mw_value = float(properties.molecular_weight) if isinstance(properties.molecular_weight, str) else properties.molecular_weight
+                enrichments["molecular_weight"] = EnrichmentResult(
+                    field_name="molecular_weight",
+                    original_value=extractions.get("molecular_weight", {}).get("value"),
+                    enriched_value=f"{mw_value:.2f} g/mol",
+                    confidence=0.95,
+                    validation_status="enriched",
+                    additional_data={"numeric_value": mw_value}
+                )
+            except (ValueError, TypeError) as e:
+                logger.warning(f"Failed to convert molecular weight to float: {properties.molecular_weight} - {e}")
+                # Store as-is if conversion fails
+                enrichments["molecular_weight"] = EnrichmentResult(
+                    field_name="molecular_weight",
+                    original_value=extractions.get("molecular_weight", {}).get("value"),
+                    enriched_value=str(properties.molecular_weight),
+                    confidence=0.80,
+                    validation_status="enriched",
+                    additional_data={"note": "Could not format as numeric"}
+                )
         
         # Chemical structure identifiers (for advanced users)
         if properties.canonical_smiles:

@@ -172,34 +172,55 @@ class PubChemClient:
     def _make_request(
         self,
         url: str,
-        timeout: int = 10,
-        apply_rate_limit: bool = True
+        timeout: int = 30,
+        apply_rate_limit: bool = True,
+        max_retries: int = 3
     ) -> Optional[Dict[str, Any]]:
-        """Make rate-limited request to PubChem API."""
-        if apply_rate_limit:
-            self._rate_limit()
-
+        """Make rate-limited request to PubChem API with retry logic."""
         if self._offline_mode:
             return None
 
-        try:
-            response = requests.get(url, timeout=timeout)
-            if response.status_code == 200:
-                return response.json()
-            elif response.status_code == 404:
-                logger.debug(f"PubChem: No match found for {url}")
+        for attempt in range(max_retries):
+            if apply_rate_limit:
+                self._rate_limit()
+
+            try:
+                response = requests.get(url, timeout=timeout)
+                if response.status_code == 200:
+                    return response.json()
+                elif response.status_code == 404:
+                    logger.debug(f"PubChem: No match found for {url}")
+                    return None
+                elif response.status_code == 503:
+                    if attempt < max_retries - 1:
+                        wait_time = 2 ** attempt  # Exponential backoff: 1s, 2s, 4s
+                        logger.warning(f"PubChem service temporarily unavailable, retrying in {wait_time}s (attempt {attempt + 1}/{max_retries})")
+                        time.sleep(wait_time)
+                        continue
+                    else:
+                        logger.warning("PubChem service temporarily unavailable after all retries")
+                        return None
+                else:
+                    logger.warning(f"PubChem API error {response.status_code}: {url}")
+                    return None
+            except requests.Timeout as e:
+                if attempt < max_retries - 1:
+                    wait_time = 2 ** attempt
+                    logger.warning(f"PubChem API timeout (attempt {attempt + 1}/{max_retries}), retrying in {wait_time}s...")
+                    time.sleep(wait_time)
+                    continue
+                else:
+                    logger.warning(f"PubChem API request timed out after {max_retries} attempts: {e}")
+                    return None
+            except requests.RequestException as e:
+                logger.warning(f"PubChem API request failed: {e}")
+                # Don't set offline mode immediately, could be transient
+                if attempt == max_retries - 1:
+                    # Only set offline after all retries exhausted
+                    self._offline_mode = True
                 return None
-            elif response.status_code == 503:
-                logger.warning("PubChem service temporarily unavailable")
-                return None
-            else:
-                logger.warning(f"PubChem API error {response.status_code}: {url}")
-                return None
-        except requests.RequestException as e:
-            logger.warning(f"PubChem API request failed: {e}")
-            # Avoid hammering the network if connectivity is blocked
-            self._offline_mode = True
-            return None
+        
+        return None
 
     def _get_offline_by_name(self, name: str) -> Optional[Dict[str, Any]]:
         """Return fixture data if available for the given name."""

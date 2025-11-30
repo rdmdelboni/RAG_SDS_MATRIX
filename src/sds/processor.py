@@ -70,7 +70,33 @@ class SDSProcessor:
 
         logger.info("Processing SDS: %s", file_path.name)
 
-        # Register document
+        # === EARLY DEDUPLICATION CHECK ===
+        # Check by path first (fastest - no hash calculation needed)
+        existing_doc = self.db.get_document_by_path(file_path)
+        if existing_doc and existing_doc.status == "completed":
+            # Check if it has extractions
+            if self.db.is_document_already_processed(existing_doc.id):
+                logger.info(
+                    "⚡ Skipping already processed file: %s (id=%d) - using cached results",
+                    file_path.name,
+                    existing_doc.id,
+                )
+                existing_extractions = self.db.get_extractions_by_document(existing_doc.id)
+                existing_status = self.db.get_document_status(existing_doc.id)
+                
+                return ProcessingResult(
+                    document_id=existing_doc.id,
+                    filename=file_path.name,
+                    status=existing_status.get("status", "completed"),
+                    extractions=existing_extractions,
+                    is_dangerous=existing_status.get("is_dangerous", False),
+                    completeness=existing_status.get("completeness", 0.0),
+                    avg_confidence=existing_status.get("avg_confidence", 0.0),
+                    processing_time=0.0,
+                    error_message=None,
+                )
+
+        # Register document (will check hash if path not found)
         try:
             doc_id = self.db.register_document(
                 filename=file_path.name,
@@ -78,6 +104,30 @@ class SDSProcessor:
                 file_size=file_path.stat().st_size,
                 file_type=file_path.suffix.lower(),
             )
+            
+            # Double-check: if register_document found a duplicate by hash, verify it's processed
+            if existing_doc is None and doc_id:
+                if self.db.is_document_already_processed(doc_id):
+                    logger.info(
+                        "⚡ Skipping duplicate by hash: %s (id=%d) - using cached results",
+                        file_path.name,
+                        doc_id,
+                    )
+                    existing_extractions = self.db.get_extractions_by_document(doc_id)
+                    existing_status = self.db.get_document_status(doc_id)
+                    
+                    return ProcessingResult(
+                        document_id=doc_id,
+                        filename=file_path.name,
+                        status=existing_status.get("status", "completed"),
+                        extractions=existing_extractions,
+                        is_dangerous=existing_status.get("is_dangerous", False),
+                        completeness=existing_status.get("completeness", 0.0),
+                        avg_confidence=existing_status.get("avg_confidence", 0.0),
+                        processing_time=0.0,
+                        error_message=None,
+                    )
+                
         except Exception as e:
             logger.error("Failed to register document: %s", e)
             raise

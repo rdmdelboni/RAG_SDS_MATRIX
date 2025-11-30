@@ -77,6 +77,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self.ollama = get_ollama_client()
         self.thread_pool = QtCore.QThreadPool.globalInstance()
         self._workers: list[TaskRunner] = []
+        self._cancel_processing = False
 
         set_language(self.settings.ui.language or "pt")
 
@@ -132,21 +133,21 @@ class MainWindow(QtWidgets.QMainWindow):
         close_btn.setToolTip("Exit application")
         close_btn.setCursor(QtGui.QCursor(QtCore.Qt.PointingHandCursor))
         close_btn.setStyleSheet(
-            "QPushButton {"
+            f"QPushButton {{"
             f"background-color: {self.colors.get('error', '#f38ba8')};"
-            "border: none;"
-            "border-radius: 4px;"
+            f"border: none;"
+            f"border-radius: 4px;"
             f"color: {self.colors['bg']};"
-            "font-weight: 700;"
-            "font-size: 14px;"
-            "padding: 0px;"
-            "}"
-            "QPushButton:hover {"
+            f"font-weight: 700;"
+            f"font-size: 14px;"
+            f"padding: 0px;"
+            f"}}"
+            f"QPushButton:hover {{"
             f"background-color: {self.colors.get('warning', '#f9e2af')};"
-            "}"
-            "QPushButton:pressed {"
+            f"}}"
+            f"QPushButton:pressed {{"
             f"background-color: {self.colors.get('error', '#f38ba8')};"
-            "}"
+            f"}}"
         )
         close_btn.clicked.connect(self.close)
         header_row.addWidget(close_btn)
@@ -207,9 +208,9 @@ class MainWindow(QtWidgets.QMainWindow):
             f"background-color: {self.colors['input']};"
             f"color: {self.colors['text']};"
             f"border: 1px solid {self.colors['overlay']};"
-            "border-radius: 4px;"
-            "padding: 6px;"
-            "}}"
+            f"border-radius: 4px;"
+            f"padding: 6px;"
+            f"}}"
         )
         url_row.addWidget(self.url_input)
         ingest_url_btn = QtWidgets.QPushButton("🌐 Ingest URL")
@@ -257,14 +258,40 @@ class MainWindow(QtWidgets.QMainWindow):
         self.use_rag_checkbox.setStyleSheet(
             f"QCheckBox {{"
             f"color: {self.colors['text']};"
-            "}}"
+            f"}}"
         )
         controls.addWidget(self.use_rag_checkbox)
 
-        process_btn = QtWidgets.QPushButton("⚙️ Process SDS")
-        self._style_button(process_btn)
-        process_btn.clicked.connect(self._on_process_sds)
-        controls.addWidget(process_btn)
+        self.process_btn = QtWidgets.QPushButton("⚙️ Process SDS")
+        self._style_button(self.process_btn)
+        self.process_btn.clicked.connect(self._on_process_sds)
+        controls.addWidget(self.process_btn)
+
+        self.stop_btn = QtWidgets.QPushButton("⏹️ Stop")
+        self.stop_btn.setStyleSheet(
+            f"QPushButton {{"
+            f"background-color: {self.colors.get('error', '#f38ba8')};"
+            f"border: none;"
+            f"border-radius: 4px;"
+            f"color: {self.colors['bg']};"
+            f"padding: 6px 12px;"
+            f"font-weight: 500;"
+            f"}}"
+            f"QPushButton:hover {{"
+            f"background-color: {self.colors.get('warning', '#f9e2af')};"
+            f"}}"
+            f"QPushButton:pressed {{"
+            f"background-color: {self.colors.get('error', '#f38ba8')};"
+            f"}}"
+            f"QPushButton:disabled {{"
+            f"background-color: {self.colors['overlay']};"
+            f"color: {self.colors['text']};"
+            f"opacity: 0.5;"
+            f"}}"
+        )
+        self.stop_btn.clicked.connect(self._on_stop_processing)
+        self.stop_btn.setEnabled(False)
+        controls.addWidget(self.stop_btn)
 
         matrix_btn = QtWidgets.QPushButton("📊 Build Matrix")
         self._style_button(matrix_btn)
@@ -284,11 +311,11 @@ class MainWindow(QtWidgets.QMainWindow):
             f"QProgressBar {{"
             f"background-color: {self.colors['input']};"
             f"border: 1px solid {self.colors['overlay']};"
-            "border-radius: 4px;"
-            "}}"
+            f"border-radius: 4px;"
+            f"}}"
             f"QProgressBar::chunk {{"
             f"background-color: {self.colors['accent']};"
-            "}}"
+            f"}}"
         )
         layout.addWidget(self.sds_progress)
 
@@ -323,8 +350,8 @@ class MainWindow(QtWidgets.QMainWindow):
             f"QFrame {{"
             f"background-color: {self.colors['surface']};"
             f"border-radius: 6px;"
-            "padding: 12px;"
-            "}}"
+            f"padding: 12px;"
+            f"}}"
         )
         db_layout = QtWidgets.QVBoxLayout(db_frame)
         db_layout.setSpacing(6)
@@ -348,8 +375,8 @@ class MainWindow(QtWidgets.QMainWindow):
             f"QFrame {{"
             f"background-color: {self.colors['surface']};"
             f"border-radius: 6px;"
-            "padding: 12px;"
-            "}}"
+            f"padding: 12px;"
+            f"}}"
         )
         ollama_layout = QtWidgets.QVBoxLayout(ollama_frame)
         ollama_layout.setSpacing(6)
@@ -376,8 +403,8 @@ class MainWindow(QtWidgets.QMainWindow):
             f"QFrame {{"
             f"background-color: {self.colors['surface']};"
             f"border-radius: 6px;"
-            "padding: 12px;"
-            "}}"
+            f"padding: 12px;"
+            f"}}"
         )
         rag_layout = QtWidgets.QVBoxLayout(rag_frame)
         rag_layout.setSpacing(6)
@@ -421,9 +448,9 @@ class MainWindow(QtWidgets.QMainWindow):
             f"background-color: {self.colors['input']};"
             f"color: {self.colors['text']};"
             f"border: 1px solid {self.colors['overlay']};"
-            "border-radius: 4px;"
-            "padding: 4px;"
-            "}}"
+            f"border-radius: 4px;"
+            f"padding: 4px;"
+            f"}}"
         )
         controls.addWidget(self.records_limit)
 
@@ -542,10 +569,10 @@ class MainWindow(QtWidgets.QMainWindow):
             f"background-color: {self.colors['input']};"
             f"color: {self.colors['text']};"
             f"border: 1px solid {self.colors['overlay']};"
-            "border-radius: 4px;"
-            "padding: 8px;"
-            "font-size: 11px;"
-            "}}"
+            f"border-radius: 4px;"
+            f"padding: 8px;"
+            f"font-size: 11px;"
+            f"}}"
         )
         self.chat_input.setMinimumHeight(36)
         input_row.addWidget(self.chat_input)
@@ -595,20 +622,20 @@ class MainWindow(QtWidgets.QMainWindow):
     def _style_button(self, button: QtWidgets.QPushButton) -> None:
         """Apply consistent styling to a button."""
         button.setStyleSheet(
-            "QPushButton {"
+            f"QPushButton {{"
             f"background-color: {self.colors['primary']};"
-            "border: none;"
-            "border-radius: 4px;"
+            f"border: none;"
+            f"border-radius: 4px;"
             f"color: {self.colors['text']};"
-            "padding: 6px 12px;"
-            "font-weight: 500;"
-            "}"
-            "QPushButton:hover {"
+            f"padding: 6px 12px;"
+            f"font-weight: 500;"
+            f"}}"
+            f"QPushButton:hover {{"
             f"background-color: {self.colors.get('primary_hover', self.colors['button_hover'])};"
-            "}"
-            "QPushButton:pressed {"
+            f"}}"
+            f"QPushButton:pressed {{"
             f"background-color: {self.colors['primary']};"
-            "}"
+            f"}}"
         )
 
     def _style_table(self, table: QtWidgets.QTableWidget) -> None:
@@ -618,23 +645,23 @@ class MainWindow(QtWidgets.QMainWindow):
             f"background-color: {self.colors['input']};"
             f"color: {self.colors['text']};"
             f"gridline-color: {self.colors['overlay']};"
-            "}}"
+            f"}}"
             f"QHeaderView::section {{"
             f"background-color: {self.colors['header']};"
             f"color: {self.colors['text']};"
-            "padding: 4px;"
-            "border: none;"
-            "}}"
+            f"padding: 4px;"
+            f"border: none;"
+            f"}}"
             f"QTableWidget::item:selected {{"
             f"background-color: {self.colors['accent']};"
             f"color: {self.colors['bg']};"
-            "}}"
+            f"}}"
         )
         table.verticalHeader().setStyleSheet(
             f"QHeaderView {{"
             f"background-color: {self.colors['header']};"
             f"color: {self.colors['text']};"
-            "}}"
+            f"}}"
         )
 
     def _style_textedit(self, textedit: QtWidgets.QTextEdit) -> None:
@@ -643,10 +670,10 @@ class MainWindow(QtWidgets.QMainWindow):
             f"QTextEdit {{"
             f"background-color: {self.colors['input']};"
             f"color: {self.colors['text']};"
-            "border: 1px solid {self.colors['overlay']};"
-            "border-radius: 4px;"
-            "padding: 4px;"
-            "}}"
+            f"border: 1px solid {self.colors['overlay']};"
+            f"border-radius: 4px;"
+            f"padding: 4px;"
+            f"}}"
         )
 
     # === Helpers ===
@@ -668,12 +695,17 @@ class MainWindow(QtWidgets.QMainWindow):
         except Exception:
             return False
 
-    def _start_task(self, fn: Callable, *args, on_result: Callable | None = None) -> None:
+    def _start_task(self, fn: Callable, *args, on_result: Callable | None = None, on_progress: Callable | None = None) -> None:
         worker = TaskRunner(fn, *args)
         self._workers.append(worker)
 
         worker.signals.message.connect(self._set_status)
         worker.signals.error.connect(lambda msg, w=worker: self._on_worker_error(msg, w))
+        
+        # Connect progress signal if handler provided
+        if on_progress:
+            worker.signals.progress.connect(on_progress)
+        
         if on_result:
             worker.signals.finished.connect(lambda result, w=worker: self._on_worker_finished(w, on_result, result))
         else:
@@ -687,7 +719,12 @@ class MainWindow(QtWidgets.QMainWindow):
 
     def _on_worker_finished(self, worker: TaskRunner, callback: Callable | None, result: object) -> None:
         if callback:
-            callback(result)
+            try:
+                callback(result)
+            except RuntimeError as e:
+                # Ignore signal deletion errors during cleanup
+                if "deleted" not in str(e).lower():
+                    raise
         self._cleanup_worker(worker)
 
     def _cleanup_worker(self, worker: TaskRunner) -> None:
@@ -695,6 +732,21 @@ class MainWindow(QtWidgets.QMainWindow):
             self._workers.remove(worker)
         except ValueError:
             pass
+    
+    def _on_stop_processing(self) -> None:
+        """Stop SDS processing safely."""
+        if not self._cancel_processing:
+            reply = QtWidgets.QMessageBox.question(
+                self,
+                "Stop Processing",
+                "Are you sure you want to stop processing? Current file will complete.",
+                QtWidgets.QMessageBox.Yes | QtWidgets.QMessageBox.No,
+                QtWidgets.QMessageBox.No
+            )
+            if reply == QtWidgets.QMessageBox.Yes:
+                self._cancel_processing = True
+                self.stop_btn.setEnabled(False)
+                self._set_status("Stopping after current file...")
 
     # === RAG ingestion ===
 
@@ -888,16 +940,45 @@ class MainWindow(QtWidgets.QMainWindow):
         if not files:
             QtWidgets.QMessageBox.information(self, "No files", "No supported SDS files found.")
             return
+        
+        # Setup UI for processing
         self.sds_progress.setValue(0)
+        self.sds_table.setRowCount(len(files))
+        for idx in range(len(files)):
+            self.sds_table.setItem(idx, 0, QtWidgets.QTableWidgetItem(files[idx].name))
+            self.sds_table.setItem(idx, 1, QtWidgets.QTableWidgetItem("-"))
+            self.sds_table.setItem(idx, 2, QtWidgets.QTableWidgetItem("⏳ Pending"))
+        
+        self._cancel_processing = False
+        self.process_btn.setEnabled(False)
+        self.stop_btn.setEnabled(True)
         use_rag = self.use_rag_checkbox.isChecked()
         self._set_status(f"Processing {len(files)} files…")
-        self._start_task(self._process_sds_task, files, use_rag, on_result=self._on_sds_done)
+        self._start_task(
+            self._process_sds_task,
+            files,
+            use_rag,
+            on_result=self._on_sds_done,
+            on_progress=self._on_sds_progress
+        )
 
-    def _process_sds_task(self, files: list[Path], use_rag: bool, *, signals: WorkerSignals | None = None) -> list[tuple[str, str, str]]:
+    def _on_sds_progress(self, percent: int, label: str) -> None:
+        """Update progress bar and status during SDS processing."""
+        self.sds_progress.setValue(percent)
+        self._set_status(f"Processing: {label}")
+
+    def _process_sds_task(self, files: list[Path], use_rag: bool, *, signals: WorkerSignals | None = None) -> list[tuple[str, str, str, int]]:
         processor = SDSProcessor()
-        results: list[tuple[str, str, str]] = []
+        results: list[tuple[str, str, str, int]] = []
         total = max(1, len(files))
         for idx, path in enumerate(files, 1):
+            # Check for cancellation
+            if self._cancel_processing:
+                if signals:
+                    signals.message.emit("Processing cancelled by user")
+                logger.info("Processing cancelled after %d/%d files", idx - 1, total)
+                break
+            
             if signals:
                 pct = int(idx / total * 100)
                 signals.progress.emit(pct, f"{path.name} ({idx}/{total})")
@@ -908,26 +989,54 @@ class MainWindow(QtWidgets.QMainWindow):
                 if res.extractions and "product_name" in res.extractions:
                     product = res.extractions.get("product_name", {})
                     chemical = product.get("value") or product.get("normalized_value") or ""
-                results.append((path.name, chemical, res.status))
+                
+                # Emit individual file result for real-time table update
+                if signals:
+                    status_emoji = "✅" if res.status == "completed" else "⚠️" if res.status == "partial" else "❌"
+                    signals.message.emit(f"{status_emoji} {path.name}: {res.status}")
+                
+                results.append((path.name, chemical, res.status, idx - 1))
             except Exception as exc:
                 logger.error("Failed to process %s: %s", path, exc)
                 if signals:
                     signals.error.emit(f"Failed: {path.name} ({exc})")
-                results.append((path.name, "", "error"))
+                results.append((path.name, "", "error", idx - 1))
         return results
 
     def _on_sds_done(self, result: object) -> None:
+        self.process_btn.setEnabled(True)
+        self.stop_btn.setEnabled(False)
+        
         if not isinstance(result, list):
             return
-        self.sds_table.setRowCount(len(result))
-        for idx, (fname, chemical, status) in enumerate(result):
-            self.sds_table.setItem(idx, 0, QtWidgets.QTableWidgetItem(fname))
-            self.sds_table.setItem(idx, 1, QtWidgets.QTableWidgetItem(chemical))
-            self.sds_table.setItem(idx, 2, QtWidgets.QTableWidgetItem(status))
+        
+        # Update table with final results
+        for fname, chemical, status, row_idx in result:
+            status_display = self._format_status(status)
+            self.sds_table.setItem(row_idx, 0, QtWidgets.QTableWidgetItem(fname))
+            self.sds_table.setItem(row_idx, 1, QtWidgets.QTableWidgetItem(chemical or "-"))
+            self.sds_table.setItem(row_idx, 2, QtWidgets.QTableWidgetItem(status_display))
+        
         self.sds_table.resizeColumnsToContents()
         self.sds_progress.setValue(100)
         self._refresh_db_stats()
-        QtWidgets.QMessageBox.information(self, "Processing complete", f"Processed {len(result)} files.")
+        
+        if self._cancel_processing:
+            QtWidgets.QMessageBox.information(self, "Processing stopped", f"Processed {len(result)} files before stopping.")
+        else:
+            QtWidgets.QMessageBox.information(self, "Processing complete", f"Processed {len(result)} files.")
+    
+    def _format_status(self, status: str) -> str:
+        """Format status with emoji for better visual feedback."""
+        status_map = {
+            "completed": "✅ Completed",
+            "partial": "⚠️ Partial",
+            "failed": "❌ Failed",
+            "error": "❌ Error",
+            "pending": "⏳ Pending",
+            "processing": "🔄 Processing",
+        }
+        return status_map.get(status.lower(), f"❓ {status}")
 
     def _on_build_matrix(self) -> None:
         self._set_status("Building matrices…")

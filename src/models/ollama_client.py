@@ -407,7 +407,9 @@ Document text:
             "stream": False,
         }
 
-        with httpx.Client(timeout=self.timeout) as client:
+        # Use extended timeout for OCR operations (5 minutes instead of 2)
+        ocr_timeout = max(self.timeout * 2.5, 300)
+        with httpx.Client(timeout=ocr_timeout) as client:
             response = client.post(url, json=payload)
             response.raise_for_status()
             data = response.json()

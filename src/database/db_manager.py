@@ -486,6 +486,84 @@ class DatabaseManager:
                 return DocumentRecord(*row)
             return None
 
+    def get_document_by_hash(self, file_hash: str) -> DocumentRecord | None:
+        """Get document by file hash (for deduplication)."""
+        with self._lock:
+            row = self.conn.execute(
+                """SELECT id, filename, file_path, file_hash, status, processed_at, error_message
+                   FROM documents WHERE file_hash = ?""",
+                [file_hash],
+            ).fetchone()
+
+            if row:
+                return DocumentRecord(*row)
+            return None
+
+    def is_document_already_processed(self, document_id: int) -> bool:
+        """Check if a document has already been successfully processed."""
+        with self._lock:
+            result = self.conn.execute(
+                """SELECT status, COUNT(*) as extraction_count
+                   FROM documents d
+                   LEFT JOIN extractions e ON d.id = e.document_id
+                   WHERE d.id = ?
+                   GROUP BY d.status""",
+                [document_id],
+            ).fetchone()
+            
+            if not result:
+                return False
+            
+            status, extraction_count = result
+            # Consider processed if status is 'completed' and has extractions
+            return status == "completed" and extraction_count > 0
+
+    def get_document_status(self, document_id: int) -> dict[str, Any]:
+        """Get document processing status and metrics."""
+        with self._lock:
+            row = self.conn.execute(
+                """SELECT status, is_dangerous, completeness_score, avg_confidence,
+                          processing_time_seconds, error_message
+                   FROM documents WHERE id = ?""",
+                [document_id],
+            ).fetchone()
+            
+            if not row:
+                return {}
+            
+            return {
+                "status": row[0],
+                "is_dangerous": row[1],
+                "completeness": row[2],
+                "avg_confidence": row[3],
+                "processing_time": row[4],
+                "error_message": row[5],
+            }
+
+    def get_extractions_by_document(self, document_id: int) -> dict[str, dict[str, Any]]:
+        """Get all extractions for a document in the format expected by ProcessingResult."""
+        with self._lock:
+            rows = self.conn.execute(
+                """SELECT field_name, value, confidence, context, validation_status,
+                          validation_message, source
+                   FROM extractions WHERE document_id = ?""",
+                [document_id],
+            ).fetchall()
+            
+            extractions = {}
+            for row in rows:
+                field_name = row[0]
+                extractions[field_name] = {
+                    "value": row[1],
+                    "confidence": row[2],
+                    "context": row[3],
+                    "validation_status": row[4],
+                    "validation_message": row[5],
+                    "source": row[6],
+                }
+            
+            return extractions
+
     # === Extraction Operations ===
 
     def store_extraction(
