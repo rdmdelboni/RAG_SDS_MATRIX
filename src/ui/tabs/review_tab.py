@@ -404,7 +404,7 @@ class EditDialog:
         """Setup the edit dialog UI."""
         self.app.logger.debug("Building EditDialog for record %s", self.record.get("id"))
 
-        # Main frame with scrolling
+        # Main frame
         main_frame = ctk.CTkFrame(
             self.dialog,
             fg_color=self.app.colors["bg"],
@@ -422,17 +422,47 @@ class EditDialog:
             text_color=self.app.colors["text"],
         ).pack(pady=10, padx=15)
 
-        # Scrollable content frame (ctk). If this fails, build a plain tk fallback.
-        try:
-            content_frame = ctk.CTkScrollableFrame(
-                main_frame,
-                fg_color=self.app.colors["surface"],
-            )
-            content_frame.pack(fill="both", expand=True, padx=0, pady=0)
-        except Exception as exc:  # pragma: no cover - UI only
-            self.app.logger.error("CTkScrollableFrame failed: %s", exc)
-            self._build_plain_fallback(main_frame)
-            return
+        # Content frame with canvas + scrollbar for scrolling
+        canvas_frame = ctk.CTkFrame(main_frame, fg_color=self.app.colors["surface"])
+        canvas_frame.pack(fill="both", expand=True, padx=0, pady=0)
+
+        # Create canvas with scrollbar
+        from tkinter import Canvas, Scrollbar, Frame as TkFrame
+        canvas = Canvas(
+            canvas_frame,
+            bg=self.app.colors["surface"],
+            highlightthickness=0,
+        )
+        scrollbar = Scrollbar(canvas_frame, orient="vertical", command=canvas.yview)
+
+        # Create the content frame inside canvas
+        content_frame = TkFrame(
+            canvas,
+            bg=self.app.colors["surface"],
+        )
+
+        # Create window in canvas
+        canvas_window = canvas.create_window(0, 0, window=content_frame, anchor="nw")
+        canvas.configure(yscrollcommand=scrollbar.set)
+
+        # Pack canvas and scrollbar
+        canvas.pack(side="left", fill="both", expand=True)
+        scrollbar.pack(side="right", fill="y")
+
+        # Update scroll region when content changes
+        def on_frame_configure(event=None):
+            canvas.configure(scrollregion=canvas.bbox("all"))
+        content_frame.bind("<Configure>", on_frame_configure)
+
+        # Mouse wheel scrolling
+        def on_mousewheel(event):
+            if event.num == 5 or event.delta < 0:
+                canvas.yview_scroll(1, "units")
+            elif event.num == 4 or event.delta > 0:
+                canvas.yview_scroll(-1, "units")
+        canvas.bind("<MouseWheel>", on_mousewheel)
+        canvas.bind("<Button-4>", on_mousewheel)
+        canvas.bind("<Button-5>", on_mousewheel)
 
         # === Extraction Fields ===
         fields_to_edit = [
@@ -546,8 +576,11 @@ class EditDialog:
         self, parent, field_name: str, field_label: str, current_value: Any
     ) -> None:
         """Create an editable field in the dialog."""
-        field_frame = ctk.CTkFrame(parent, fg_color="transparent")
+        from tkinter import Frame as TkFrame
+        field_frame = TkFrame(parent, bg=self.app.colors["surface"])
         field_frame.pack(fill="x", padx=15, pady=8)
+
+        from tkinter import Label as TkLabel
 
         # Label with extraction info
         label_text = field_label
@@ -561,13 +594,13 @@ class EditDialog:
         if source:
             label_text += f" [{source}]"
 
-        ctk.CTkLabel(
+        TkLabel(
             field_frame,
             text=label_text,
             font=("JetBrains Mono", 11, "bold"),
-            text_color=self.app.colors["text"],
+            fg=self.app.colors["text"],
+            bg=self.app.colors["surface"],
             anchor="w",
-            width=150,
         ).pack(side="top", anchor="w", pady=(0, 5))
 
         try:
@@ -575,17 +608,19 @@ class EditDialog:
             context = field_detail.get("context", "")
             if context and len(context) > 10:
                 context_display = context[:100] + "..." if len(context) > 100 else context
-                ctk.CTkLabel(
+                TkLabel(
                     field_frame,
                     text=f"Context: {context_display}",
                     font=("JetBrains Mono", 9),
-                    text_color=self.app.colors["subtext"],
+                    fg=self.app.colors["subtext"],
+                    bg=self.app.colors["surface"],
                     anchor="w",
                     wraplength=700,
+                    justify="left",
                 ).pack(side="top", anchor="w", pady=(0, 5))
 
             # Input row
-            input_frame = ctk.CTkFrame(field_frame, fg_color="transparent")
+            input_frame = TkFrame(field_frame, bg=self.app.colors["surface"])
             input_frame.pack(fill="x")
 
             # Value entry (multiline for long fields)
@@ -634,11 +669,12 @@ class EditDialog:
             self.field_entries[field_name] = entry
 
             # Confidence entry
-            conf_label = ctk.CTkLabel(
+            conf_label = TkLabel(
                 input_frame,
                 text="Confidence:",
                 font=("JetBrains Mono", 10),
-                text_color=self.app.colors["subtext"],
+                fg=self.app.colors["subtext"],
+                bg=self.app.colors["surface"],
             )
             conf_label.pack(side="left", padx=(0, 5))
 
