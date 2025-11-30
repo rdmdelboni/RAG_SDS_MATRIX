@@ -262,6 +262,15 @@ class MainWindow(QtWidgets.QMainWindow):
         )
         controls.addWidget(self.use_rag_checkbox)
 
+        self.process_all_checkbox = QtWidgets.QCheckBox("Check it to include all files (or not, to skip processed ones)")
+        self.process_all_checkbox.setChecked(False)
+        self.process_all_checkbox.setStyleSheet(
+            f"QCheckBox {{"
+            f"color: {self.colors['text']};"
+            f"}}"
+        )
+        controls.addWidget(self.process_all_checkbox)
+
         self.process_btn = QtWidgets.QPushButton("⚙️ Process SDS")
         self._style_button(self.process_btn)
         self.process_btn.clicked.connect(self._on_process_sds)
@@ -312,11 +321,15 @@ class MainWindow(QtWidgets.QMainWindow):
             f"background-color: {self.colors['input']};"
             f"border: 1px solid {self.colors['overlay']};"
             f"border-radius: 4px;"
+            f"height: 20px;"
+            f"text-align: center;"
             f"}}"
             f"QProgressBar::chunk {{"
-            f"background-color: {self.colors['accent']};"
+            f"background-color: {self.colors['primary']};"
+            f"border-radius: 2px;"
             f"}}"
         )
+        self.sds_progress.setTextVisible(True)
         layout.addWidget(self.sds_progress)
 
         self.sds_table = QtWidgets.QTableWidget(0, 3)
@@ -932,6 +945,13 @@ class MainWindow(QtWidgets.QMainWindow):
             files.extend(folder.rglob(f"*{suffix}"))
         return sorted(files)
 
+    def _is_file_processed(self, file_path: Path) -> bool:
+        """Check if a file has already been successfully processed."""
+        doc = self.db.get_document_by_path(file_path)
+        if doc is None:
+            return False
+        return doc.status == "completed"
+
     def _on_process_sds(self) -> None:
         if not self._selected_sds_folder:
             QtWidgets.QMessageBox.warning(self, "No folder", "Select an SDS folder first.")
@@ -940,7 +960,18 @@ class MainWindow(QtWidgets.QMainWindow):
         if not files:
             QtWidgets.QMessageBox.information(self, "No files", "No supported SDS files found.")
             return
-        
+
+        # Filter out already processed files if checkbox is unchecked
+        process_all = self.process_all_checkbox.isChecked()
+        if not process_all:
+            files = [f for f in files if not self._is_file_processed(f)]
+            if not files:
+                QtWidgets.QMessageBox.information(
+                    self, "All processed",
+                    "All files have already been processed. Check 'Process all files' to reprocess."
+                )
+                return
+
         # Setup UI for processing
         self.sds_progress.setValue(0)
         self.sds_table.setRowCount(len(files))
@@ -948,16 +979,20 @@ class MainWindow(QtWidgets.QMainWindow):
             self.sds_table.setItem(idx, 0, QtWidgets.QTableWidgetItem(files[idx].name))
             self.sds_table.setItem(idx, 1, QtWidgets.QTableWidgetItem("-"))
             self.sds_table.setItem(idx, 2, QtWidgets.QTableWidgetItem("⏳ Pending"))
-        
+
         self._cancel_processing = False
         self.process_btn.setEnabled(False)
         self.stop_btn.setEnabled(True)
         use_rag = self.use_rag_checkbox.isChecked()
-        self._set_status(f"Processing {len(files)} files…")
+        status_msg = f"Processing {len(files)} files…"
+        if not process_all:
+            status_msg += " (skipping already processed)"
+        self._set_status(status_msg)
         self._start_task(
             self._process_sds_task,
             files,
             use_rag,
+            process_all,
             on_result=self._on_sds_done,
             on_progress=self._on_sds_progress
         )
@@ -967,7 +1002,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self.sds_progress.setValue(percent)
         self._set_status(f"Processing: {label}")
 
-    def _process_sds_task(self, files: list[Path], use_rag: bool, *, signals: WorkerSignals | None = None) -> list[tuple[str, str, str, int]]:
+    def _process_sds_task(self, files: list[Path], use_rag: bool, force_reprocess: bool = False, *, signals: WorkerSignals | None = None) -> list[tuple[str, str, str, int]]:
         processor = SDSProcessor()
         results: list[tuple[str, str, str, int]] = []
         total = max(1, len(files))
@@ -978,13 +1013,13 @@ class MainWindow(QtWidgets.QMainWindow):
                     signals.message.emit("Processing cancelled by user")
                 logger.info("Processing cancelled after %d/%d files", idx - 1, total)
                 break
-            
+
             if signals:
                 pct = int(idx / total * 100)
                 signals.progress.emit(pct, f"{path.name} ({idx}/{total})")
                 signals.message.emit(f"Processing {path.name}")
             try:
-                res = processor.process(path, use_rag=use_rag)
+                res = processor.process(path, use_rag=use_rag, force_reprocess=force_reprocess)
                 chemical = ""
                 if res.extractions and "product_name" in res.extractions:
                     product = res.extractions.get("product_name", {})

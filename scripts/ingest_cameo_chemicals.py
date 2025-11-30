@@ -109,8 +109,15 @@ class CAMEOScraper:
         """
         self.timeout = timeout
         self.delay = delay
+        # Throttling
+        import os
+        # Requests per second; default conservative to avoid overload
+        try:
+            self.rps = max(0.1, float(os.getenv("CAMEO_RPS", "0.5")))
+        except Exception:
+            self.rps = 0.5
         self.request_count = 0
-        self.max_requests_per_minute = 60
+        self.max_requests_per_minute = int(self.rps * 60)
         self.last_request_time = 0
         self.session = requests.Session()
 
@@ -160,11 +167,13 @@ class CAMEOScraper:
         import time as time_module
 
         current_time = time_module.time()
-        # Add random jitter (±20%) to delay to appear more human-like
-        jitter = self.delay * random.uniform(0.8, 1.2)
+        # Base delay per configured RPS + jitter (±20%)
+        base_delay = (1.0 / self.rps) if self.rps > 0 else self.delay
+        jitter = base_delay * random.uniform(0.8, 1.2)
 
-        if current_time - self.last_request_time < jitter:
-            sleep_time = jitter - (current_time - self.last_request_time)
+        elapsed = current_time - self.last_request_time
+        if elapsed < jitter:
+            sleep_time = jitter - elapsed
             logger.debug(f"Rate limiting: sleeping {sleep_time:.2f}s")
             time_module.sleep(sleep_time)
 
@@ -719,9 +728,9 @@ Examples:
         logger.warning("\n⚠️  Interrupted by user")
         ingester.cleanup()
         print("\nIngestion interrupted. You can resume with:")
-        print(f"  python ingest_cameo_chemicals.py --start <next-letter>")
+        print("  python ingest_cameo_chemicals.py --start <next-letter>")
         return 130
-    except Exception as exc:
+    except Exception:
         logger.exception("❌ Unexpected error during ingestion")
         ingester.cleanup()
         return 1

@@ -5,6 +5,8 @@ from __future__ import annotations
 import hashlib
 import json
 from dataclasses import dataclass, field
+from collections import deque
+import time
 from pathlib import Path
 from typing import Any, Iterable
 from urllib.parse import urlparse
@@ -187,6 +189,28 @@ class KnowledgeIngestionService:
             else None
         )
         # Craw4AI client removed (feature deprecated)
+        # Throttling: simple per-process RPS limit for external HTTP calls
+        # Config via env var INGESTION_RPS; default=1.0 RPS
+        import os
+        try:
+            self._ingestion_rps = max(0.1, float(os.getenv("INGESTION_RPS", "1.0")))
+        except Exception:
+            self._ingestion_rps = 1.0
+        self._throttle_q: deque[float] = deque(maxlen=100)
+
+    def _throttle_ingestion(self) -> None:
+        """Enforce per-process RPS for external ingestion HTTP calls."""
+        if self._ingestion_rps <= 0:
+            return
+        now = time.time()
+        self._throttle_q.append(now)
+        one_sec_ago = now - 1.0
+        while self._throttle_q and self._throttle_q[0] < one_sec_ago:
+            self._throttle_q.popleft()
+        if len(self._throttle_q) > self._ingestion_rps:
+            sleep_for = max(0.0, self._throttle_q[0] + 1.0 - now)
+            if sleep_for > 0:
+                time.sleep(sleep_for)
 
     # === Public ingestion methods ===
 
@@ -236,6 +260,8 @@ class KnowledgeIngestionService:
         try:
             import requests
 
+            # throttle external request
+            self._throttle_ingestion()
             response = requests.get(url, timeout=60)
             response.raise_for_status()
             text = response.text
@@ -478,6 +504,7 @@ class KnowledgeIngestionService:
                 summary.skipped.append(f"not_whitelisted:{url}")
                 continue
             try:
+                self._throttle_ingestion()
                 response = requests.get(url, timeout=30)
                 response.raise_for_status()
                 text = self._extract_readable_text(response.text)
@@ -600,6 +627,8 @@ class KnowledgeIngestionService:
                 }
             )
 
+        # throttle API trigger
+        self._throttle_ingestion()
         snapshot_id = self.brightdata_client.trigger_snapshot(payload)
         self._write_snapshot_id(snapshot_id)
         logger.info("Bright Data snapshot triggered: %s", snapshot_id)
@@ -623,6 +652,8 @@ class KnowledgeIngestionService:
         if not snapshot_id:
             raise RuntimeError("Snapshot ID not provided")
 
+        # throttle status polling
+        self._throttle_ingestion()
         status = self.brightdata_client.snapshot_status(snapshot_id)
         return status
 
@@ -642,6 +673,8 @@ class KnowledgeIngestionService:
         dataset_dir.mkdir(parents=True, exist_ok=True)
         output_path = dataset_dir / f"{snapshot_id}.jsonl"
 
+        # throttle download
+        self._throttle_ingestion()
         self.brightdata_client.download_snapshot(snapshot_id, output_path)
         self._write_snapshot_id(snapshot_id)
         logger.info("Downloaded snapshot %s to %s", snapshot_id, output_path)

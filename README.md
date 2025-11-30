@@ -58,11 +58,6 @@ A RAG-enhanced Safety Data Sheet (SDS) processor that extracts chemical safety i
 ### 1. Clone the Repository
 
 ```bash
-git clone <repository-url>
-cd RAG_SDS_MATRIX
-```
-
-### 2. Create Virtual Environment
 
 ```bash
 python -m venv venv

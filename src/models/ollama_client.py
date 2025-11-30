@@ -8,6 +8,9 @@ from dataclasses import dataclass, field
 from functools import lru_cache
 from pathlib import Path
 from typing import Any
+import os
+import time
+import collections
 
 import httpx
 from langchain_ollama import OllamaEmbeddings
@@ -197,7 +200,7 @@ Document text:
             )
 
             parsed = self._parse_json_response(response)
-            results = {}
+            results: dict[str, ExtractionResult] = {}
 
             for field_name in fields:
                 field_data = parsed.get(field_name, {})
@@ -208,7 +211,7 @@ Document text:
                         source="llm",
                     )
                 else:
-                    results[field] = ExtractionResult(
+                    results[field_name] = ExtractionResult(
                         value="NOT_FOUND", confidence=0.0, source="llm"
                     )
 
@@ -366,6 +369,7 @@ Document text:
     ) -> str:
         """Make a chat completion request to Ollama."""
         url = f"{self.base_url}/api/chat"
+        self._throttle_ollama()
 
         payload = {
             "model": model,
@@ -383,8 +387,8 @@ Document text:
         with httpx.Client(timeout=self.timeout) as client:
             response = client.post(url, json=payload)
             response.raise_for_status()
-            data = response.json()
-            return data.get("message", {}).get("content", "")
+            resp_json = response.json()
+            return resp_json.get("message", {}).get("content", "")
 
     def _chat_completion_with_image(
         self,
@@ -394,6 +398,7 @@ Document text:
     ) -> str:
         """Make a chat completion request with an image."""
         url = f"{self.base_url}/api/chat"
+        self._throttle_ollama()
 
         payload = {
             "model": model,
@@ -412,8 +417,26 @@ Document text:
         with httpx.Client(timeout=ocr_timeout) as client:
             response = client.post(url, json=payload)
             response.raise_for_status()
-            data = response.json()
-            return data.get("message", {}).get("content", "")
+            resp_json = response.json()
+            return resp_json.get("message", {}).get("content", "")
+
+    # === Rate Limiting ===
+    _ollama_times: collections.deque[float] = field(default_factory=collections.deque)
+
+    def _throttle_ollama(self) -> None:
+        """Throttle requests to Ollama to avoid overload."""
+        try:
+            max_rps = int(os.getenv("OLLAMA_RPS", "20"))
+        except Exception:
+            max_rps = 20
+        now = time.time()
+        self._ollama_times.append(now)
+        one_sec_ago = now - 1.0
+        while self._ollama_times and self._ollama_times[0] < one_sec_ago:
+            self._ollama_times.popleft()
+        if len(self._ollama_times) >= max_rps:
+            sleep_for = max(0.005, self._ollama_times[0] + 1.0 - now)
+            time.sleep(sleep_for)
 
     def _parse_json_response(self, response: str) -> dict[str, Any]:
         """Parse JSON from LLM response, handling code blocks."""

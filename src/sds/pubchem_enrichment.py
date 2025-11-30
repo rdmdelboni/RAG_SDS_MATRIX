@@ -10,7 +10,12 @@ This module uses PubChem API to:
 
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, Set
+from pathlib import Path
 import requests
+import os
+import json
+import time
+import collections
 
 from ..utils.logger import get_logger
 from .external_validator import PubChemClient
@@ -85,6 +90,48 @@ class PubChemEnricher:
         self.client = PubChemClient(cache_ttl=cache_ttl)
         self.timeout = timeout
         logger.info(f"PubChem enricher initialized (timeout: {timeout}s)")
+        # Per-run in-memory cache to avoid repeated lookups
+        self._cas_cache: Dict[str, Dict[str, Any]] = {}
+        # Persistent on-disk cache across runs (optional)
+        try:
+            from ..config.settings import get_settings
+            settings = get_settings()
+            cache_dir = settings.paths.data_dir
+        except Exception:
+            cache_dir = Path(os.getenv("DATA_DIR", "."))
+        self._disk_cache_path = Path(cache_dir) / "pubchem_cache.json"
+        self._disk_cache_enabled = os.getenv("PUBCHEM_CACHE_ENABLED", "true").lower() in ("true", "1", "yes")
+        self._disk_cache: Dict[str, Dict[str, Any]] = {}
+        if self._disk_cache_enabled:
+            try:
+                if self._disk_cache_path.exists():
+                    self._disk_cache = json.loads(self._disk_cache_path.read_text(encoding="utf-8"))
+            except Exception:
+                self._disk_cache = {}
+        # Lightweight rate limiter to avoid overloading PubChem
+        self._max_requests_per_minute = int(os.getenv("PUBCHEM_RPS", "30"))
+        self._request_times: collections.deque[float] = collections.deque()
+        # Confidence threshold to skip enrichment for already reliable docs
+        self._skip_if_confidence_ge = float(os.getenv("PUBCHEM_SKIP_CONFIDENCE_GE", "0.80"))
+        # Stats
+        self._stats = {
+            "mem_cache_hits": 0,
+            "disk_cache_hits": 0,
+            "requests": 0,
+        }
+
+    def _throttle(self) -> None:
+        """Throttle outbound requests to avoid overloading PubChem."""
+        now = time.time()
+        self._request_times.append(now)
+        # Keep only last minute
+        one_minute_ago = now - 60.0
+        while self._request_times and self._request_times[0] < one_minute_ago:
+            self._request_times.popleft()
+        if len(self._request_times) >= self._max_requests_per_minute:
+            # Sleep just enough to drop below the limit
+            sleep_for = max(0.01, self._request_times[0] + 60.0 - now)
+            time.sleep(sleep_for)
     
     def enrich_extraction(
         self,
@@ -102,6 +149,15 @@ class PubChemEnricher:
             Dictionary of enrichment results by field name
         """
         enrichments = {}
+
+        # Skip enrichment for high-confidence docs to reduce external calls
+        try:
+            confidences = [float(v.get("confidence", 0.0)) for v in extractions.values()]
+            avg_conf = sum(confidences) / len(confidences) if confidences else 0.0
+        except Exception:
+            avg_conf = 0.0
+        if avg_conf >= self._skip_if_confidence_ge:
+            return enrichments
         
         # Get chemical properties first
         properties = self._fetch_chemical_properties(extractions)
@@ -120,7 +176,18 @@ class PubChemEnricher:
         
         if aggressive:
             enrichments.update(self._fill_missing_fields(extractions, properties))
-        
+        # Optional debug: log cache stats for observability
+        try:
+            stats = self.get_cache_stats()
+            logger.debug(
+                "PubChem cache stats: mem_hits=%d, disk_hits=%d, requests=%d",
+                stats.get("mem_cache_hits", 0),
+                stats.get("disk_cache_hits", 0),
+                stats.get("requests", 0),
+            )
+        except Exception:
+            pass
+
         return enrichments
     
     def _fetch_chemical_properties(
@@ -145,27 +212,77 @@ class PubChemEnricher:
         cas_number = extractions.get("cas_number", {}).get("value")
         if cas_number:
             logger.debug(f"Looking up chemical by CAS: {cas_number}")
-            data = self.client.search_by_cas(cas_number)
+            # Use per-run cache to avoid duplicate calls
+            data = self._cas_cache.get(cas_number)
+            # Check persistent cache first
+            if not data and self._disk_cache_enabled:
+                data = self._disk_cache.get(f"cas:{cas_number}")
+            if not data:
+                self._throttle()
+                self._stats["requests"] += 1
+                data = self.client.search_by_cas(cas_number)
+                if data:
+                    self._cas_cache[cas_number] = data
+                    if self._disk_cache_enabled:
+                        self._disk_cache[f"cas:{cas_number}"] = data
+                        self._persist_disk_cache()
             if data:
+                # increment cache hits
+                if cas_number in self._cas_cache:
+                    self._stats["mem_cache_hits"] += 1
+                elif self._disk_cache_enabled and self._disk_cache.get(f"cas:{cas_number}"):
+                    self._stats["disk_cache_hits"] += 1
                 return self._parse_pubchem_data(data, cas_number)
         
         # Try product name
         product_name = extractions.get("product_name", {}).get("value")
         if product_name:
             logger.debug(f"Looking up chemical by name: {product_name}")
+            self._throttle()
+            self._stats["requests"] += 1
             data = self.client.search_by_name(product_name)
             if data:
+                if self._disk_cache_enabled:
+                    self._disk_cache[f"name:{product_name}"] = data
+                    self._persist_disk_cache()
                 return self._parse_pubchem_data(data, cas_number)
         
         # Try molecular formula (least reliable - many compounds share formulas)
         molecular_formula = extractions.get("molecular_formula", {}).get("value")
         if molecular_formula:
             logger.debug(f"Looking up chemical by formula: {molecular_formula}")
+            self._throttle()
+            self._stats["requests"] += 1
             data = self._search_by_formula(molecular_formula)
             if data:
+                if self._disk_cache_enabled:
+                    self._disk_cache[f"formula:{molecular_formula}"] = data
+                    self._persist_disk_cache()
                 return self._parse_pubchem_data(data, cas_number)
         
         return None
+
+    def _persist_disk_cache(self) -> None:
+        """Persist the disk cache safely."""
+        if not self._disk_cache_enabled:
+            return
+        try:
+            self._disk_cache_path.parent.mkdir(parents=True, exist_ok=True)
+            self._disk_cache_path.write_text(json.dumps(self._disk_cache)[:2_000_000], encoding="utf-8")
+        except Exception:
+            # Best-effort: ignore persistence errors
+            pass
+
+    def get_cache_stats(self) -> Dict[str, int]:
+        """Return current cache/requests stats for logging."""
+        try:
+            return {
+                "mem_cache_hits": int(self._stats.get("mem_cache_hits", 0)),
+                "disk_cache_hits": int(self._stats.get("disk_cache_hits", 0)),
+                "requests": int(self._stats.get("requests", 0)),
+            }
+        except Exception:
+            return {"mem_cache_hits": 0, "disk_cache_hits": 0, "requests": 0}
     
     def _search_by_formula(self, formula: str) -> Optional[Dict[str, Any]]:
         """
@@ -268,11 +385,10 @@ class PubChemEnricher:
         if data and "PropertyTable" in data:
             properties = data["PropertyTable"].get("Properties", [])
             if properties:
-                prop_data = properties[0]
-                # Store what's available
                 # Note: Physical properties like melting/boiling points
                 # are typically in the "Description" section, not property API
-                pass
+                # Keep placeholder without unused assignments to satisfy linters.
+                return
     
     def _fetch_ghs_classification(self, props: ChemicalProperties) -> None:
         """Fetch GHS hazard classification."""
@@ -280,6 +396,7 @@ class PubChemEnricher:
             return
         
         url = f"{self.client.BASE_URL}/compound/cid/{props.cid}/classification/JSON"
+        self._throttle()
         data = self.client._make_request(url)
         
         if not data or "Hierarchies" not in data:
@@ -291,7 +408,8 @@ class PubChemEnricher:
         ghs_pictograms = set()
         
         for hierarchy in data["Hierarchies"]:
-            source = hierarchy.get("SourceName", "")
+            # Defensive: hierarchy may be dicts; ensure mapping access
+            source = hierarchy.get("SourceName", "") if isinstance(hierarchy, dict) else ""
             if "GHS" in source.upper():
                 self._extract_ghs_codes(hierarchy, ghs_h_codes, ghs_p_codes, ghs_pictograms)
         

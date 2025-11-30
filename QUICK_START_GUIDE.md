@@ -7,6 +7,20 @@ cd /home/rdmdelboni/Work/Gits/RAG_SDS_MATRIX
 source .venv/bin/activate
 python main.py
 ```
+ 
+### Throttling External Calls
+
+To avoid overloading external services while keeping throughput stable, configure these environment variables before running:
+
+```zsh
+export INGESTION_RPS=0.5        # general ingestion HTTP requests/sec
+export CAMEO_RPS=0.5            # CAMEO scraper requests/sec
+export PUBCHEM_RPS=20           # PubChem requests/min
+export PUBCHEM_SKIP_CONFIDENCE_GE=0.85  # skip enrichment on high-confidence docs
+export PUBCHEM_CACHE_ENABLED=true       # enable persistent PubChem cache
+```
+
+You can place these in `.env.local` or export them in your shell session.
 
 ## Using Table Column Resizing
 

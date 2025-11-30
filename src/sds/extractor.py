@@ -7,6 +7,9 @@ import shutil
 import subprocess
 import tempfile
 import logging
+import os
+import time
+import collections
 from pathlib import Path
 from typing import Any
 
@@ -241,8 +244,9 @@ class SDSExtractor:
             pil_img.save(img_bytes, format="PNG")
             img_bytes.seek(0)
 
-            # Use Ollama OCR
+            # Use Ollama OCR (throttled)
             ollama = get_ollama_client()
+            self._throttle_ocr()
             text = ollama.ocr_image_bytes(img_bytes.read())
 
             logger.debug("OCR extracted %d characters", len(text))
@@ -271,6 +275,7 @@ class SDSExtractor:
                         buf = io.BytesIO()
                         pil_img.save(buf, format="PNG")
                         buf.seek(0)
+                        self._throttle_ocr()
                         text = ollama.ocr_image_bytes(buf.read())
                         parts.append(f"\n--- Page {page_num} (FULL OCR) ---\n{text}")
                     except Exception as exc:  # pragma: no cover
@@ -280,6 +285,25 @@ class SDSExtractor:
         except Exception as exc:  # pragma: no cover
             logger.warning("Full PDF OCR failed: %s", exc)
             return ""
+
+    # === OCR Rate Limiting ===
+    _ocr_times: collections.deque[float] = collections.deque()
+
+    def _throttle_ocr(self) -> None:
+        """Throttle OCR requests to avoid overloading OCR backend."""
+        try:
+            max_rps = int(os.getenv("OCR_RPS", "30"))
+        except Exception:
+            max_rps = 30
+        now = time.time()
+        self._ocr_times.append(now)
+        one_sec_ago = now - 1.0
+        while self._ocr_times and self._ocr_times[0] < one_sec_ago:
+            self._ocr_times.popleft()
+        if len(self._ocr_times) >= max_rps:
+            # Sleep to respect rate per second
+            sleep_for = max(0.005, self._ocr_times[0] + 1.0 - now)
+            time.sleep(sleep_for)
 
     def _extract_sections(self, text: str) -> dict[int, str]:
         """Extract SDS sections from text with improved detection.

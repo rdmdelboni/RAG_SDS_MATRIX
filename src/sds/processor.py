@@ -55,12 +55,13 @@ class SDSProcessor:
         self.confidence_scorer = ConfidenceScorer()
         self.chunker = TextChunker()
 
-    def process(self, file_path: Path, use_rag: bool = True) -> ProcessingResult:
+    def process(self, file_path: Path, use_rag: bool = True, force_reprocess: bool = False) -> ProcessingResult:
         """Process a single SDS document.
 
         Args:
             file_path: Path to SDS file
             use_rag: Whether to use RAG enrichment for dangerous chemicals
+            force_reprocess: If True, reprocess even if already processed. If False, use cache.
 
         Returns:
             ProcessingResult with extracted data
@@ -73,7 +74,7 @@ class SDSProcessor:
         # === EARLY DEDUPLICATION CHECK ===
         # Check by path first (fastest - no hash calculation needed)
         existing_doc = self.db.get_document_by_path(file_path)
-        if existing_doc and existing_doc.status == "completed":
+        if existing_doc and existing_doc.status == "completed" and not force_reprocess:
             # Check if it has extractions
             if self.db.is_document_already_processed(existing_doc.id):
                 logger.info(
@@ -83,7 +84,7 @@ class SDSProcessor:
                 )
                 existing_extractions = self.db.get_extractions_by_document(existing_doc.id)
                 existing_status = self.db.get_document_status(existing_doc.id)
-                
+
                 return ProcessingResult(
                     document_id=existing_doc.id,
                     filename=file_path.name,
@@ -106,7 +107,7 @@ class SDSProcessor:
             )
             
             # Double-check: if register_document found a duplicate by hash, verify it's processed
-            if existing_doc is None and doc_id:
+            if existing_doc is None and doc_id and not force_reprocess:
                 if self.db.is_document_already_processed(doc_id):
                     logger.info(
                         "⚡ Skipping duplicate by hash: %s (id=%d) - using cached results",
@@ -115,7 +116,7 @@ class SDSProcessor:
                     )
                     existing_extractions = self.db.get_extractions_by_document(doc_id)
                     existing_status = self.db.get_document_status(doc_id)
-                    
+
                     return ProcessingResult(
                         document_id=doc_id,
                         filename=file_path.name,
