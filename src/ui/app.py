@@ -128,20 +128,24 @@ class MainWindow(QtWidgets.QMainWindow):
         header_row.addStretch()
 
         close_btn = QtWidgets.QPushButton("×")
-        close_btn.setFixedSize(28, 28)
-        close_btn.setToolTip("Exit")
+        close_btn.setFixedSize(36, 36)
+        close_btn.setToolTip("Exit application")
         close_btn.setCursor(QtGui.QCursor(QtCore.Qt.PointingHandCursor))
         close_btn.setStyleSheet(
             "QPushButton {"
-            f"background-color: {self.colors.get('error', '#dc2626')};"
+            f"background-color: {self.colors.get('error', '#f87171')};"
             "border: none;"
             "border-radius: 6px;"
-            "color: white;"
+            f"color: {self.colors['bg']};"
             "font-weight: 700;"
-            "font-size: 14px;"
+            "font-size: 18px;"
+            "padding: 0px;"
             "}"
             "QPushButton:hover {"
             f"background-color: {self.colors.get('warning', '#f59e0b')};"
+            "}"
+            "QPushButton:pressed {"
+            f"background-color: {self.colors.get('error', '#f87171')};"
             "}"
         )
         close_btn.clicked.connect(self.close)
@@ -481,6 +485,7 @@ class MainWindow(QtWidgets.QMainWindow):
         input_row = QtWidgets.QHBoxLayout()
         self.chat_input = QtWidgets.QLineEdit()
         self.chat_input.setPlaceholderText("Ask a question about your knowledge base...")
+        self.chat_input.returnPressed.connect(self._on_chat_send)  # Allow Enter to send
         self.chat_input.setStyleSheet(
             f"QLineEdit {{"
             f"background-color: {self.colors['input']};"
@@ -488,16 +493,25 @@ class MainWindow(QtWidgets.QMainWindow):
             f"border: 1px solid {self.colors['overlay']};"
             "border-radius: 4px;"
             "padding: 8px;"
+            "font-size: 11px;"
             "}}"
         )
+        self.chat_input.setMinimumHeight(36)
         input_row.addWidget(self.chat_input)
 
-        send_btn = QtWidgets.QPushButton("Send")
+        send_btn = QtWidgets.QPushButton("📤 Send")
         self._style_button(send_btn)
         send_btn.clicked.connect(self._on_chat_send)
+        send_btn.setMinimumHeight(36)
         input_row.addWidget(send_btn)
 
         layout.addLayout(input_row)
+
+        # Status indicator
+        self.chat_status = QtWidgets.QLabel("Ready")
+        self._style_label(self.chat_status, color=self.colors.get("subtext", "#888888"))
+        self.chat_status.setStyleSheet(self.chat_status.styleSheet() + "; font-size: 10px;")
+        layout.addWidget(self.chat_status)
 
         return tab
 
@@ -1018,7 +1032,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self.ollama_status_label.setText(status_text)
 
     def _on_chat_send(self) -> None:
-        """Handle chat message sending."""
+        """Handle chat message sending with RAG context."""
         text = self.chat_input.text().strip()
         if not text:
             return
@@ -1026,12 +1040,65 @@ class MainWindow(QtWidgets.QMainWindow):
         # Add user message to display
         self.chat_display.append(f"<b>You:</b> {text}")
         self.chat_input.clear()
+        self.chat_input.setEnabled(False)
 
-        # TODO: Implement RAG query and LLM response
-        self.chat_display.append(
-            "<i>Chat functionality is being implemented. "
-            "This will use RAG to retrieve documents and Ollama for responses.</i>"
-        )
+        # Show thinking status
+        self.chat_status.setText("🤔 Thinking...")
+        self._style_label(self.chat_status, color=self.colors.get("accent", "#4fd1c5"))
+
+        # Run in background thread
+        def chat_task(*, signals: WorkerSignals):
+            try:
+                # Get RAG context from vector store
+                vector_store = self.ingestion.vector_store
+                results = vector_store.search_with_context(text, top_k=3)
+
+                context = ""
+                if results:
+                    context = "\n".join([r.get("context", "") for r in results])
+                    signals.message.emit(f"Found {len(results)} relevant documents")
+                else:
+                    signals.message.emit("No relevant documents found in knowledge base")
+
+                # Get Ollama response with context
+                response = self.ollama.chat(message=text, context=context)
+                signals.finished.emit(response)
+            except Exception as e:
+                signals.error.emit(str(e))
+                signals.finished.emit(None)
+
+        # Create and run worker
+        worker = TaskRunner(chat_task)
+        worker.signals.finished.connect(self._on_chat_response)
+        worker.signals.error.connect(self._on_chat_error)
+        worker.signals.message.connect(self._set_status)
+        self._workers.append(worker)
+        self.thread_pool.start(worker)
+
+    def _on_chat_response(self, response: object) -> None:
+        """Handle chat response from Ollama."""
+        self.chat_input.setEnabled(True)
+
+        if response:
+            # Format the response nicely
+            response_text = str(response).strip()
+            self.chat_display.append(f"<b>Assistant:</b> {response_text}")
+            self.chat_status.setText("✓ Response received")
+            self._style_label(self.chat_status, color=self.colors.get("success", "#22c55e"))
+            self._set_status("Chat response received")
+        else:
+            self.chat_display.append("<i style='color: #f87171;'>Error: Could not generate response</i>")
+            self.chat_status.setText("✗ Failed to generate response")
+            self._style_label(self.chat_status, color=self.colors.get("error", "#f87171"))
+            self._set_status("Chat failed", error=True)
+
+    def _on_chat_error(self, error: str) -> None:
+        """Handle chat error."""
+        self.chat_input.setEnabled(True)
+        self.chat_display.append(f"<i style='color: #f87171;'>⚠️ Error: {error}</i>")
+        self.chat_status.setText(f"✗ Error: {error}")
+        self._style_label(self.chat_status, color=self.colors.get("error", "#f87171"))
+        self._set_status(f"Chat error: {error}", error=True)
 
 
 def run_app() -> None:
