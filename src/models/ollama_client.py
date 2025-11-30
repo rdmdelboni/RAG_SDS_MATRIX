@@ -355,8 +355,11 @@ Document text:
 
             return response.strip()
 
+        except TimeoutError as e:
+            logger.debug("OCR timeout (expected for large images): %s. Increase OCR_TIMEOUT_SECONDS if needed.", e)
+            return ""
         except Exception as e:
-            logger.error("OCR failed: %s", e)
+            logger.debug("OCR failed (skipping gracefully): %s", e)
             return ""
 
     # === Private Methods ===
@@ -412,8 +415,10 @@ Document text:
             "stream": False,
         }
 
-        # Use extended timeout for OCR operations (5 minutes instead of 2)
-        ocr_timeout = max(self.timeout * 2.5, 300)
+        # Use configurable OCR timeout (default 10 minutes)
+        from ..config.settings import get_settings
+        settings = get_settings()
+        ocr_timeout = settings.processing.ocr_timeout_seconds
         with httpx.Client(timeout=ocr_timeout) as client:
             response = client.post(url, json=payload)
             response.raise_for_status()

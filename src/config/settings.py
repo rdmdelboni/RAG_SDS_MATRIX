@@ -81,6 +81,9 @@ class ProcessingConfig:
         default_factory=lambda: os.getenv("OCR_FALLBACK_ENABLED", "true").lower()
         in ("true", "1", "yes")
     )
+    ocr_timeout_seconds: int = field(
+        default_factory=lambda: int(os.getenv("OCR_TIMEOUT_SECONDS", "600"))
+    )
     # PDF handling
     pdf_preprocess_enabled: bool = field(
         default_factory=lambda: os.getenv("PDF_PREPROCESS_ENABLED", "false").lower()

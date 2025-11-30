@@ -252,8 +252,11 @@ class SDSExtractor:
             logger.debug("OCR extracted %d characters", len(text))
             return text
 
+        except TimeoutError as e:
+            logger.debug("OCR timeout (this is normal for large images - skipping): %s", e)
+            return ""
         except Exception as e:
-            logger.warning("OCR failed: %s", e)
+            logger.debug("OCR failed (skipping): %s", e)
             return ""
 
     def _ocr_pdf_full(self, file_path: Path) -> str:
@@ -277,13 +280,17 @@ class SDSExtractor:
                         buf.seek(0)
                         self._throttle_ocr()
                         text = ollama.ocr_image_bytes(buf.read())
-                        parts.append(f"\n--- Page {page_num} (FULL OCR) ---\n{text}")
+                        if text:  # Only add non-empty results
+                            parts.append(f"\n--- Page {page_num} (FULL OCR) ---\n{text}")
+                    except TimeoutError as exc:  # pragma: no cover
+                        logger.debug("Full OCR page %d timeout (expected for large images - skipping)", page_num)
+                        continue
                     except Exception as exc:  # pragma: no cover
                         logger.debug("Full OCR page %d failed: %s", page_num, exc)
                         continue
             return "\n".join(parts)
         except Exception as exc:  # pragma: no cover
-            logger.warning("Full PDF OCR failed: %s", exc)
+            logger.debug("Full PDF OCR failed (skipping): %s", exc)
             return ""
 
     # === OCR Rate Limiting ===
