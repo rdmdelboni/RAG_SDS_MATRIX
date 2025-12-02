@@ -413,6 +413,28 @@ class MainWindow(QtWidgets.QMainWindow):
         )
         select_all_btn.clicked.connect(self._on_select_all_files)
         info_row.addWidget(select_all_btn)
+        select_pending_btn = QtWidgets.QPushButton("All Pending")
+        select_pending_btn.setMaximumWidth(100)
+        select_pending_btn.setStyleSheet(
+            f"QPushButton {{"
+            f"background-color: {self.colors.get('warning', '#f9e2af')};"
+            f"border: none;"
+            f"border-radius: 4px;"
+            f"color: {self.colors['bg']};"
+            f"padding: 4px 8px;"
+            f"font-weight: 500;"
+            f"font-size: 11px;"
+            f"}}"
+            f"QPushButton:hover {{"
+            f"background-color: {self.colors.get('overlay', '#6c7086')};"
+            f"}}"
+            f"QPushButton:pressed {{"
+            f"background-color: {self.colors.get('warning', '#f9e2af')};"
+            f"}}"
+        )
+        select_pending_btn.clicked.connect(self._on_select_pending_files)
+        info_row.addWidget(select_pending_btn)
+
 
         unselect_all_btn = QtWidgets.QPushButton("Unselect All")
         unselect_all_btn.setMaximumWidth(100)
@@ -1146,6 +1168,30 @@ class MainWindow(QtWidgets.QMainWindow):
 
         self.sds_table.resizeColumnsToContents()
         self._update_sds_file_count()
+    def _on_select_pending_files(self) -> None:
+        """Select only files that are not yet processed (pending)."""
+        total_files = self.sds_table.rowCount()
+        for idx in range(total_files):
+            # Check the Status column (column 3) to see if it's pending
+            status_item = self.sds_table.item(idx, 3)
+            if status_item:
+                status_text = status_item.text()
+                # Select only if status is "Pending" or "Will reprocess"
+                is_pending = "Pending" in status_text or "Will reprocess" in status_text
+
+                container = self.sds_table.cellWidget(idx, 0)
+                if container:
+                    layout = container.layout()
+                    if layout and layout.count() > 0:
+                        item = layout.itemAt(0)
+                        if item:
+                            checkbox = item.widget()
+                            if isinstance(checkbox, QtWidgets.QCheckBox):
+                                checkbox.stateChanged.disconnect()
+                                checkbox.setChecked(is_pending)
+                                checkbox.stateChanged.connect(self._on_file_selection_changed)
+        self._update_sds_file_count()
+
 
     def _on_file_selection_changed(self) -> None:
         """Handle file selection/deselection in the table."""
@@ -1326,7 +1372,7 @@ class MainWindow(QtWidgets.QMainWindow):
                 
                 # Emit individual file result for real-time table update
                 if signals:
-                    status_emoji = "✅" if res.status == "completed" else "⚠️" if res.status == "partial" else "❌"
+                    status_emoji = "✅" if res.status in ("completed", "success") else "⚠️" if res.status == "partial" else "❌"
                     signals.message.emit(f"{status_emoji} {path.name}: {res.status}")
                 
                 results.append((path.name, chemical, res.status, idx - 1))
@@ -1363,14 +1409,15 @@ class MainWindow(QtWidgets.QMainWindow):
     def _format_status(self, status: str) -> str:
         """Format status with emoji for better visual feedback."""
         status_map = {
-            "completed": "✅ Completed",
+            "completed": "✅ Success",
+            "success": "✅ Success",
             "partial": "⚠️ Partial",
             "failed": "❌ Failed",
             "error": "❌ Error",
             "pending": "⏳ Pending",
             "processing": "🔄 Processing",
         }
-        return status_map.get(status.lower(), f"❓ {status}")
+        return status_map.get(status.lower(), f"✅ {status}")
 
     def _on_build_matrix(self) -> None:
         self._set_status("Building matrices…")

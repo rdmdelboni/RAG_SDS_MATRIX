@@ -71,14 +71,40 @@ class SDSProcessor:
 
         logger.info("Processing SDS: %s", file_path.name)
 
-        # === EARLY DEDUPLICATION CHECK ===
-        # Check by path first (fastest - no hash calculation needed)
+        # === EARLY DEDUPLICATION CHECK (OPTIMIZED) ===
+        # Step 1: Fast check by name+size (no I/O needed)
+        if not force_reprocess:
+            existing_doc_id = self.db.check_file_by_name_and_size(
+                file_path.name, file_path.stat().st_size
+            )
+            if existing_doc_id:
+                logger.info(
+                    "⚡ Skipping already processed file (by name+size): %s (id=%d) - using cached results",
+                    file_path.name,
+                    existing_doc_id,
+                )
+                existing_extractions = self.db.get_extractions_by_document(existing_doc_id)
+                existing_status = self.db.get_document_status(existing_doc_id)
+
+                return ProcessingResult(
+                    document_id=existing_doc_id,
+                    filename=file_path.name,
+                    status=existing_status.get("status", "completed"),
+                    extractions=existing_extractions,
+                    is_dangerous=existing_status.get("is_dangerous", False),
+                    completeness=existing_status.get("completeness", 0.0),
+                    avg_confidence=existing_status.get("avg_confidence", 0.0),
+                    processing_time=0.0,
+                    error_message=None,
+                )
+
+        # Step 2: Check by path (for files that may have been moved)
         existing_doc = self.db.get_document_by_path(file_path)
-        if existing_doc and existing_doc.status == "completed" and not force_reprocess:
+        if existing_doc and existing_doc.status in ("completed", "success") and not force_reprocess:
             # Check if it has extractions
             if self.db.is_document_already_processed(existing_doc.id):
                 logger.info(
-                    "⚡ Skipping already processed file: %s (id=%d) - using cached results",
+                    "⚡ Skipping already processed file (by path): %s (id=%d) - using cached results",
                     file_path.name,
                     existing_doc.id,
                 )
@@ -97,7 +123,7 @@ class SDSProcessor:
                     error_message=None,
                 )
 
-        # Register document (will check hash if path not found)
+        # Register document (will check hash as final deduplication if needed)
         try:
             doc_id = self.db.register_document(
                 filename=file_path.name,
@@ -106,28 +132,32 @@ class SDSProcessor:
                 file_type=file_path.suffix.lower(),
             )
             
-            # Double-check: if register_document found a duplicate by hash, verify it's processed
-            if existing_doc is None and doc_id and not force_reprocess:
-                if self.db.is_document_already_processed(doc_id):
-                    logger.info(
-                        "⚡ Skipping duplicate by hash: %s (id=%d) - using cached results",
-                        file_path.name,
-                        doc_id,
-                    )
-                    existing_extractions = self.db.get_extractions_by_document(doc_id)
-                    existing_status = self.db.get_document_status(doc_id)
+            # If register_document found a duplicate by hash and we didn't catch it earlier,
+            # verify it's actually processed before skipping
+            if doc_id and not force_reprocess:
+                # Check if this doc_id is different from what we found by path
+                # (meaning register_document found it by hash)
+                if existing_doc is None or doc_id != existing_doc.id:
+                    if self.db.is_document_already_processed(doc_id):
+                        logger.info(
+                            "⚡ Skipping duplicate by hash: %s (id=%d) - using cached results",
+                            file_path.name,
+                            doc_id,
+                        )
+                        existing_extractions = self.db.get_extractions_by_document(doc_id)
+                        existing_status = self.db.get_document_status(doc_id)
 
-                    return ProcessingResult(
-                        document_id=doc_id,
-                        filename=file_path.name,
-                        status=existing_status.get("status", "completed"),
-                        extractions=existing_extractions,
-                        is_dangerous=existing_status.get("is_dangerous", False),
-                        completeness=existing_status.get("completeness", 0.0),
-                        avg_confidence=existing_status.get("avg_confidence", 0.0),
-                        processing_time=0.0,
-                        error_message=None,
-                    )
+                        return ProcessingResult(
+                            document_id=doc_id,
+                            filename=file_path.name,
+                            status=existing_status.get("status", "completed"),
+                            extractions=existing_extractions,
+                            is_dangerous=existing_status.get("is_dangerous", False),
+                            completeness=existing_status.get("completeness", 0.0),
+                            avg_confidence=existing_status.get("avg_confidence", 0.0),
+                            processing_time=0.0,
+                            error_message=None,
+                        )
                 
         except Exception as e:
             logger.error("Failed to register document: %s", e)

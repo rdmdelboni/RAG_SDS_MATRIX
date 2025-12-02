@@ -309,6 +309,10 @@ class DatabaseManager:
             self.conn.execute(
                 "CREATE INDEX IF NOT EXISTS idx_documents_processed_at ON documents(processed_at);"
             )
+            # Fast lookup by name+size for deduplication (PERFORMANCE FIX)
+            self.conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_documents_name_size ON documents(filename, file_size_bytes);"
+            )
             self.conn.execute(
                 "CREATE INDEX IF NOT EXISTS idx_documents_is_dangerous ON documents(is_dangerous);"
             )
@@ -499,6 +503,21 @@ class DatabaseManager:
                 return DocumentRecord(*row)
             return None
 
+    def get_processed_file_paths(self) -> set[str]:
+        """Get all file paths that have been successfully processed (fast batch lookup).
+
+        Returns:
+            Set of file paths with status='completed'/'success' that have extractions
+        """
+        with self._lock:
+            rows = self.conn.execute(
+                """SELECT DISTINCT d.file_path
+                   FROM documents d
+                   INNER JOIN extractions e ON d.id = e.document_id
+                   WHERE d.status IN ('completed', 'success')"""
+            ).fetchall()
+            return {row[0] for row in rows}
+
     def is_document_already_processed(self, document_id: int) -> bool:
         """Check if a document has already been successfully processed."""
         with self._lock:
@@ -515,8 +534,8 @@ class DatabaseManager:
                 return False
             
             status, extraction_count = result
-            # Consider processed if status is 'completed' and has extractions
-            return status == "completed" and extraction_count > 0
+            # Consider processed if status is 'completed'/'success' and has extractions
+            return status in ("completed", "success") and extraction_count > 0
 
     def get_document_status(self, document_id: int) -> dict[str, Any]:
         """Get document processing status and metrics."""
@@ -539,6 +558,47 @@ class DatabaseManager:
                 "processing_time": row[4],
                 "error_message": row[5],
             }
+
+    def get_processed_files_metadata(self) -> dict[tuple[str, int], int]:
+        """Get metadata of all processed files for fast deduplication by name+size.
+        
+        Returns:
+            Dictionary mapping (filename, size_bytes) -> document_id for processed files
+        """
+        with self._lock:
+            rows = self.conn.execute(
+                """SELECT d.filename, d.file_size_bytes, d.id
+                   FROM documents d
+                   INNER JOIN extractions e ON d.id = e.document_id
+                   WHERE d.status IN ('completed', 'success')
+                   GROUP BY d.id, d.filename, d.file_size_bytes
+                   HAVING COUNT(e.id) > 0"""
+            ).fetchall()
+            return {(row[0], row[1]): row[2] for row in rows}
+
+    def check_file_by_name_and_size(self, filename: str, file_size: int) -> int | None:
+        """Check if file with given name and size was already processed.
+        
+        Args:
+            filename: Name of the file
+            file_size: Size in bytes
+            
+        Returns:
+            Document ID if already processed, None otherwise
+        """
+        with self._lock:
+            result = self.conn.execute(
+                """SELECT d.id
+                   FROM documents d
+                   INNER JOIN extractions e ON d.id = e.document_id
+                   WHERE d.filename = ? AND d.file_size_bytes = ?
+                   AND d.status IN ('completed', 'success')
+                   GROUP BY d.id
+                   HAVING COUNT(e.id) > 0
+                   LIMIT 1""",
+                [filename, file_size],
+            ).fetchone()
+            return result[0] if result else None
 
     def get_extractions_by_document(self, document_id: int) -> dict[str, dict[str, Any]]:
         """Get all extractions for a document in the format expected by ProcessingResult."""
