@@ -259,6 +259,10 @@ class MainWindow(QtWidgets.QMainWindow):
             f"QCheckBox {{"
             f"color: {self.colors['text']};"
             f"}}"
+            f"QCheckBox::indicator {{"
+            f"background-color: {self.colors['primary']};"
+            f"border-radius: 3px;"
+            f"}}"
         )
         controls.addWidget(self.use_rag_checkbox)
 
@@ -267,6 +271,10 @@ class MainWindow(QtWidgets.QMainWindow):
         self.process_all_checkbox.setStyleSheet(
             f"QCheckBox {{"
             f"color: {self.colors['text']};"
+            f"}}"
+            f"QCheckBox::indicator {{"
+            f"background-color: {self.colors['primary']};"
+            f"border-radius: 3px;"
             f"}}"
         )
         controls.addWidget(self.process_all_checkbox)
@@ -349,7 +357,9 @@ class MainWindow(QtWidgets.QMainWindow):
         self._style_table(self.sds_table)
 
         # Add info label for file counts with select all/unselect all buttons
-        info_row = QtWidgets.QHBoxLayout()
+        # Hidden until a folder is selected
+        self.sds_info_container = QtWidgets.QWidget()
+        info_row = QtWidgets.QHBoxLayout(self.sds_info_container)
 
         self.sds_info = QtWidgets.QLabel("")
         self.sds_info.setStyleSheet(
@@ -403,7 +413,8 @@ class MainWindow(QtWidgets.QMainWindow):
         info_row.addWidget(unselect_all_btn)
 
         info_row.addStretch()
-        layout.addLayout(info_row)
+        self.sds_info_container.setVisible(False)
+        layout.addWidget(self.sds_info_container)
         layout.addWidget(self.sds_table)
 
         # Store selected files for processing
@@ -1013,6 +1024,8 @@ class MainWindow(QtWidgets.QMainWindow):
                 ("hazard_class", "Hazard"),
             ],
         )
+        # Color NOT_FOUND entries in red
+        self._colorize_not_found_in_review()
         self._set_status("Review table refreshed")
 
     def _populate_table(self, table: QtWidgets.QTableWidget, rows: list[dict], *, columns: list[tuple[str, str]]) -> None:
@@ -1029,6 +1042,15 @@ class MainWindow(QtWidgets.QMainWindow):
                 item = QtWidgets.QTableWidgetItem(str(value))
                 table.setItem(r, c, item)
         table.resizeColumnsToContents()
+
+    def _colorize_not_found_in_review(self) -> None:
+        """Colorize NOT_FOUND entries in the review table with red text."""
+        red_color = self.colors.get("error", "#f38ba8")
+        for row in range(self.review_table.rowCount()):
+            for col in range(self.review_table.columnCount()):
+                item = self.review_table.item(row, col)
+                if item and "NOT_FOUND" in item.text():
+                    item.setForeground(QtGui.QColor(red_color))
 
     # === SDS processing ===
 
@@ -1048,8 +1070,21 @@ class MainWindow(QtWidgets.QMainWindow):
         self.sds_table.setRowCount(len(files))
         self.sds_selected_files = files.copy()
 
+        # Show the info container now that files are loaded
+        self.sds_info_container.setVisible(True)
+
         for idx, file_path in enumerate(files):
-            # Column 0: Checkbox
+            # Column 0: Checkbox in a container with gray background
+            container = QtWidgets.QWidget()
+            container.setStyleSheet(
+                f"QWidget {{"
+                f"background-color: {self.colors['input']};"
+                f"}}"
+            )
+            container_layout = QtWidgets.QHBoxLayout(container)
+            container_layout.setContentsMargins(4, 0, 4, 0)
+            container_layout.setSpacing(0)
+
             checkbox = QtWidgets.QCheckBox()
             checkbox.setChecked(True)
             checkbox.stateChanged.connect(self._on_file_selection_changed)
@@ -1061,7 +1096,9 @@ class MainWindow(QtWidgets.QMainWindow):
                 f"border-radius: 3px;"
                 f"}}"
             )
-            self.sds_table.setCellWidget(idx, 0, checkbox)
+            container_layout.addWidget(checkbox)
+            container_layout.addStretch()
+            self.sds_table.setCellWidget(idx, 0, container)
 
             # Column 1: File name
             self.sds_table.setItem(idx, 1, QtWidgets.QTableWidgetItem(file_path.name))
@@ -1082,49 +1119,68 @@ class MainWindow(QtWidgets.QMainWindow):
         total_files = self.sds_table.rowCount()
         selected_files = 0
         for idx in range(total_files):
-            widget = self.sds_table.cellWidget(idx, 0)
-            if widget:
-                checkbox = widget.findChild(QtWidgets.QCheckBox)
-                if checkbox and checkbox.isChecked():
-                    selected_files += 1
+            container = self.sds_table.cellWidget(idx, 0)
+            if container:
+                # Container has layout with checkbox
+                layout = container.layout()
+                if layout and layout.count() > 0:
+                    checkbox = layout.itemAt(0).widget()
+                    if isinstance(checkbox, QtWidgets.QCheckBox) and checkbox.isChecked():
+                        selected_files += 1
         self.sds_info.setText(f"Files: {selected_files} selected / {total_files} listed")
 
     def _on_select_all_files(self) -> None:
         """Select all files in the SDS table."""
         total_files = self.sds_table.rowCount()
         for idx in range(total_files):
-            widget = self.sds_table.cellWidget(idx, 0)
-            if isinstance(widget, QtWidgets.QCheckBox):
-                widget.stateChanged.disconnect()
-                widget.setChecked(True)
-                widget.stateChanged.connect(self._on_file_selection_changed)
+            container = self.sds_table.cellWidget(idx, 0)
+            if container:
+                layout = container.layout()
+                if layout and layout.count() > 0:
+                    item = layout.itemAt(0)
+                    if item:
+                        checkbox = item.widget()
+                        if isinstance(checkbox, QtWidgets.QCheckBox):
+                            checkbox.stateChanged.disconnect()
+                            checkbox.setChecked(True)
+                            checkbox.stateChanged.connect(self._on_file_selection_changed)
         self._update_sds_file_count()
 
     def _on_unselect_all_files(self) -> None:
         """Unselect all files in the SDS table."""
         total_files = self.sds_table.rowCount()
         for idx in range(total_files):
-            widget = self.sds_table.cellWidget(idx, 0)
-            if isinstance(widget, QtWidgets.QCheckBox):
-                widget.stateChanged.disconnect()
-                widget.setChecked(False)
-                widget.stateChanged.connect(self._on_file_selection_changed)
+            container = self.sds_table.cellWidget(idx, 0)
+            if container:
+                layout = container.layout()
+                if layout and layout.count() > 0:
+                    item = layout.itemAt(0)
+                    if item:
+                        checkbox = item.widget()
+                        if isinstance(checkbox, QtWidgets.QCheckBox):
+                            checkbox.stateChanged.disconnect()
+                            checkbox.setChecked(False)
+                            checkbox.stateChanged.connect(self._on_file_selection_changed)
         self._update_sds_file_count()
 
     def _get_selected_sds_files(self) -> list[Path]:
         """Get list of selected files from the table."""
         selected = []
         for idx in range(self.sds_table.rowCount()):
-            widget = self.sds_table.cellWidget(idx, 0)
-            if widget:
-                checkbox = widget.findChild(QtWidgets.QCheckBox)
-                if checkbox and checkbox.isChecked():
-                    file_item = self.sds_table.item(idx, 1)
-                    if file_item and self._selected_sds_folder:
-                        file_name = file_item.text()
-                        file_path = self._selected_sds_folder / file_name
-                        if file_path.exists():
-                            selected.append(file_path)
+            container = self.sds_table.cellWidget(idx, 0)
+            if container:
+                layout = container.layout()
+                if layout and layout.count() > 0:
+                    item = layout.itemAt(0)
+                    if item:
+                        checkbox = item.widget()
+                        if isinstance(checkbox, QtWidgets.QCheckBox) and checkbox.isChecked():
+                            file_item = self.sds_table.item(idx, 1)
+                            if file_item and self._selected_sds_folder:
+                                file_name = file_item.text()
+                                file_path = self._selected_sds_folder / file_name
+                                if file_path.exists():
+                                    selected.append(file_path)
         return selected
 
     def _collect_sds_files(self, folder: Path) -> list[Path]:
