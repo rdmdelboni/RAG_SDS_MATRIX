@@ -37,6 +37,7 @@ class WorkerSignals(QtCore.QObject):
     error = QtCore.Signal(str)
     message = QtCore.Signal(str)
     progress = QtCore.Signal(int, str)  # percent, label
+    file_result = QtCore.Signal(str, str, str, int)  # filename, chemical, status, row_idx
 
 
 class TaskRunner(QtCore.QRunnable):
@@ -79,6 +80,9 @@ class MainWindow(QtWidgets.QMainWindow):
         self._workers: list[TaskRunner] = []
         self._cancel_processing = False
 
+        # Initialize QSettings for persistent storage
+        self.app_settings = QtCore.QSettings("RAG_SDS_MATRIX", "RAG_SDS_MATRIX")
+
         set_language(self.settings.ui.language or "pt")
 
         self.setWindowTitle(get_text("app.title"))
@@ -104,6 +108,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self._selected_sds_folder: Path | None = None
 
         self._build_ui()
+        self._load_last_sds_folder()  # Load last used folder
         self._refresh_rag_stats()
         self._refresh_sources_table()
         self._refresh_db_stats()
@@ -253,54 +258,19 @@ class MainWindow(QtWidgets.QMainWindow):
         layout.addLayout(folder_row)
 
         controls = QtWidgets.QHBoxLayout()
-        self.use_rag_checkbox = QtWidgets.QCheckBox("Use RAG enrichment")
+        self.use_rag_checkbox = QtWidgets.QCheckBox()
         self.use_rag_checkbox.setChecked(True)
-        self.use_rag_checkbox.setStyleSheet(
-            f"QCheckBox {{"
-            f"color: {self.colors['text']};"
-            f"spacing: 5px;"
-            f"}}"
-            f"QCheckBox::indicator {{"
-            f"width: 18px;"
-            f"height: 18px;"
-            f"background-color: {self.colors['primary']};"
-            f"border: 2px solid {self.colors['primary']};"
-            f"border-radius: 3px;"
-            f"}}"
-            f"QCheckBox::indicator:checked {{"
-            f"background-color: {self.colors.get('success', '#a6e3a1')};"
-            f"border: 2px solid {self.colors.get('success', '#a6e3a1')};"
-            f"}}"
-            f"QCheckBox::indicator:unchecked {{"
-            f"background-color: {self.colors['primary']};"
-            f"border: 2px solid {self.colors['primary']};"
-            f"}}"
-        )
+        self._style_checkbox_symbols(self.use_rag_checkbox, "Use RAG enrichment", font_size=13)
         controls.addWidget(self.use_rag_checkbox)
 
-        self.process_all_checkbox = QtWidgets.QCheckBox("Check it to include all files (or not, to skip processed ones)")
+        self.process_all_checkbox = QtWidgets.QCheckBox()
         self.process_all_checkbox.setChecked(False)
-        self.process_all_checkbox.setStyleSheet(
-            f"QCheckBox {{"
-            f"color: {self.colors['text']};"
-            f"spacing: 5px;"
-            f"}}"
-            f"QCheckBox::indicator {{"
-            f"width: 18px;"
-            f"height: 18px;"
-            f"background-color: {self.colors['primary']};"
-            f"border: 2px solid {self.colors['primary']};"
-            f"border-radius: 3px;"
-            f"}}"
-            f"QCheckBox::indicator:checked {{"
-            f"background-color: {self.colors.get('success', '#a6e3a1')};"
-            f"border: 2px solid {self.colors.get('success', '#a6e3a1')};"
-            f"}}"
-            f"QCheckBox::indicator:unchecked {{"
-            f"background-color: {self.colors['primary']};"
-            f"border: 2px solid {self.colors['primary']};"
-            f"}}"
+        self._style_checkbox_symbols(
+            self.process_all_checkbox,
+            "Check it to include all files (or not, to skip processed ones)",
+            font_size=13,
         )
+        self.process_all_checkbox.stateChanged.connect(self._on_process_all_changed)
         controls.addWidget(self.process_all_checkbox)
 
         self.process_btn = QtWidgets.QPushButton("⚙️ Process SDS")
@@ -779,6 +749,47 @@ class MainWindow(QtWidgets.QMainWindow):
             f"}}"
         )
 
+    def _style_checkbox_symbols(
+        self,
+        checkbox: QtWidgets.QCheckBox,
+        label: str = "",
+        *,
+        font_size: int = 14,
+        spacing: int = 6,
+    ) -> None:
+        """Render a checkbox as colored ✓/✗ text instead of the default indicator."""
+        checked_color = self.colors.get("success", "#22c55e")
+        unchecked_color = self.colors.get("subtext", "#9ca3af")
+
+        def apply(state: int) -> None:
+            is_checked = state == QtCore.Qt.CheckState.Checked.value
+            symbol = "✓" if is_checked else "✗"
+            color = checked_color if is_checked else unchecked_color
+            text = f"{symbol} {label}".strip()
+            checkbox.setText(text)
+            checkbox.setStyleSheet(
+                "QCheckBox {"
+                f"color: {color};"
+                "font-weight: 600;"
+                f"font-size: {font_size}px;"
+                f"spacing: {spacing}px;"
+                "}"
+                "QCheckBox::indicator {"
+                "width: 0px;"
+                "height: 0px;"
+                "}"
+            )
+
+        checkbox._symbolic_update = apply  # type: ignore[attr-defined]
+        checkbox.stateChanged.connect(apply)
+        apply(checkbox.checkState().value)
+
+    def _refresh_checkbox_symbols(self, checkbox: QtWidgets.QCheckBox) -> None:
+        """Re-apply the symbolic checkbox styling after programmatic state changes."""
+        updater = getattr(checkbox, "_symbolic_update", None)
+        if callable(updater):
+            updater(checkbox.checkState().value)
+
     def _style_table(self, table: QtWidgets.QTableWidget) -> None:
         """Apply consistent styling to a table."""
         table.setStyleSheet(
@@ -888,6 +899,9 @@ class MainWindow(QtWidgets.QMainWindow):
         # Connect progress signal if handler provided
         if on_progress:
             worker.signals.progress.connect(on_progress)
+        # Connect per-file result updates when handler is present
+        if hasattr(self, "_on_file_processed"):
+            worker.signals.file_result.connect(self._on_file_processed)
         
         if on_result:
             worker.signals.finished.connect(lambda result, w=worker: self._on_worker_finished(w, on_result, result))
@@ -1100,12 +1114,31 @@ class MainWindow(QtWidgets.QMainWindow):
 
     # === SDS processing ===
 
+    def _load_last_sds_folder(self) -> None:
+        """Load and restore the last selected SDS folder from settings."""
+        last_folder = self.app_settings.value("sds_last_folder", None)
+        if last_folder and Path(last_folder).exists():
+            self._selected_sds_folder = Path(last_folder)
+            if hasattr(self, 'folder_label'):
+                self.folder_label.setText(str(self._selected_sds_folder))
+            # Don't auto-load files, just set the path
+        else:
+            if hasattr(self, 'folder_label'):
+                self.folder_label.setText("No folder selected")
+
+    def _save_last_sds_folder(self, folder_path: Path) -> None:
+        """Save the selected SDS folder to settings for next run."""
+        self.app_settings.setValue("sds_last_folder", str(folder_path))
+
     def _on_select_folder(self) -> None:
+        # Start from last used folder if available, otherwise use default
+        start_dir = str(self._selected_sds_folder) if self._selected_sds_folder else str(self.settings.paths.input_dir)
         folder = QtWidgets.QFileDialog.getExistingDirectory(
-            self, "Select SDS folder", str(self.settings.paths.input_dir)
+            self, "Select SDS folder", start_dir
         )
         if folder:
             self._selected_sds_folder = Path(folder)
+            self._save_last_sds_folder(self._selected_sds_folder)
             self.folder_label.setText(str(self._selected_sds_folder))
             self._load_sds_files()
 
@@ -1119,7 +1152,13 @@ class MainWindow(QtWidgets.QMainWindow):
         # Show the info container now that files are loaded
         self.sds_info_container.setVisible(True)
 
+        # Get processed files for visual indicators
+        processed_metadata = self.db.get_processed_files_metadata()
+
         for idx, file_path in enumerate(files):
+            # Check if this file was already processed
+            file_key = (file_path.name, file_path.stat().st_size)
+            is_processed = file_key in processed_metadata
             # Column 0: Checkbox in a container with gray background
             container = QtWidgets.QWidget()
             container.setStyleSheet(
@@ -1133,41 +1172,60 @@ class MainWindow(QtWidgets.QMainWindow):
 
             checkbox = QtWidgets.QCheckBox()
             checkbox.setChecked(True)
+            self._style_checkbox_symbols(checkbox, font_size=16, spacing=0)
             checkbox.stateChanged.connect(self._on_file_selection_changed)
-            # Style checkbox with primary blue background
-            checkbox.setStyleSheet(
-                f"QCheckBox {{"
-                f"spacing: 4px;"
-                f"}}"
-                f"QCheckBox::indicator {{"
-                f"width: 16px;"
-                f"height: 16px;"
-                f"background-color: {self.colors['primary']};"
-                f"border: 1px solid {self.colors['primary']};"
-                f"border-radius: 2px;"
-                f"}}"
-                f"QCheckBox::indicator:checked {{"
-                f"background-color: {self.colors.get('success', '#a6e3a1')};"
-                f"border: 1px solid {self.colors.get('success', '#a6e3a1')};"
-                f"}}"
-                f"QCheckBox::indicator:unchecked {{"
-                f"background-color: {self.colors['primary']};"
-                f"border: 1px solid {self.colors['primary']};"
-                f"}}"
-            )
             container_layout.addWidget(checkbox)
             container_layout.addStretch()
             self.sds_table.setCellWidget(idx, 0, container)
 
-            # Column 1: File name
-            self.sds_table.setItem(idx, 1, QtWidgets.QTableWidgetItem(file_path.name))
+            # Column 1: File name (with visual indicator if processed)
+            file_display = f"✓ {file_path.name}" if is_processed else file_path.name
+            file_item = QtWidgets.QTableWidgetItem(file_display)
+            if is_processed:
+                file_item.setForeground(QtGui.QColor(self.colors.get('success', '#a6e3a1')))
+            self.sds_table.setItem(idx, 1, file_item)
+            
             # Column 2: Chemical
             self.sds_table.setItem(idx, 2, QtWidgets.QTableWidgetItem(""))
-            # Column 3: Status
-            self.sds_table.setItem(idx, 3, QtWidgets.QTableWidgetItem("Pending"))
+            
+            # Column 3: Status with visual indicator
+            process_all = self.process_all_checkbox.isChecked()
+            if is_processed:
+                if process_all:
+                    status_item = QtWidgets.QTableWidgetItem("↻ Will reprocess")
+                    status_item.setForeground(QtGui.QColor(self.colors.get('warning', '#f9e2af')))
+                else:
+                    status_item = QtWidgets.QTableWidgetItem("✓ Processed (skip)")
+                    status_item.setForeground(QtGui.QColor(self.colors.get('success', '#a6e3a1')))
+            else:
+                status_item = QtWidgets.QTableWidgetItem("⏳ Pending")
+            self.sds_table.setItem(idx, 3, status_item)
 
         self.sds_table.resizeColumnsToContents()
         self._update_sds_file_count()
+
+    def _on_process_all_changed(self) -> None:
+        """Handle changes to the 'Process all files' checkbox."""
+        # Update status indicators in the table
+        process_all = self.process_all_checkbox.isChecked()
+        
+        for idx in range(self.sds_table.rowCount()):
+            status_item = self.sds_table.item(idx, 3)
+            if status_item:
+                # Check if this is a processed file (by checking file name column for ✓)
+                name_item = self.sds_table.item(idx, 1)
+                is_processed = name_item and name_item.text().startswith("✓ ")
+                
+                if is_processed:
+                    if process_all:
+                        # When "process all" is checked, show that it will be reprocessed
+                        status_item.setText("↻ Will reprocess")
+                        status_item.setForeground(QtGui.QColor(self.colors.get('warning', '#f9e2af')))
+                    else:
+                        # When unchecked, show it will be skipped
+                        status_item.setText("✓ Processed (skip)")
+                        status_item.setForeground(QtGui.QColor(self.colors.get('success', '#a6e3a1')))
+
     def _on_select_pending_files(self) -> None:
         """Select only files that are not yet processed (pending)."""
         total_files = self.sds_table.rowCount()
@@ -1187,9 +1245,10 @@ class MainWindow(QtWidgets.QMainWindow):
                         if item:
                             checkbox = item.widget()
                             if isinstance(checkbox, QtWidgets.QCheckBox):
-                                checkbox.stateChanged.disconnect()
+                                checkbox.blockSignals(True)
                                 checkbox.setChecked(is_pending)
-                                checkbox.stateChanged.connect(self._on_file_selection_changed)
+                                checkbox.blockSignals(False)
+                                self._refresh_checkbox_symbols(checkbox)
         self._update_sds_file_count()
 
 
@@ -1224,9 +1283,10 @@ class MainWindow(QtWidgets.QMainWindow):
                     if item:
                         checkbox = item.widget()
                         if isinstance(checkbox, QtWidgets.QCheckBox):
-                            checkbox.stateChanged.disconnect()
+                            checkbox.blockSignals(True)
                             checkbox.setChecked(True)
-                            checkbox.stateChanged.connect(self._on_file_selection_changed)
+                            checkbox.blockSignals(False)
+                            self._refresh_checkbox_symbols(checkbox)
         self._update_sds_file_count()
 
     def _on_unselect_all_files(self) -> None:
@@ -1241,9 +1301,10 @@ class MainWindow(QtWidgets.QMainWindow):
                     if item:
                         checkbox = item.widget()
                         if isinstance(checkbox, QtWidgets.QCheckBox):
-                            checkbox.stateChanged.disconnect()
+                            checkbox.blockSignals(True)
                             checkbox.setChecked(False)
-                            checkbox.stateChanged.connect(self._on_file_selection_changed)
+                            checkbox.blockSignals(False)
+                            self._refresh_checkbox_symbols(checkbox)
         self._update_sds_file_count()
 
     def _get_selected_sds_files(self) -> list[Path]:
@@ -1314,13 +1375,26 @@ class MainWindow(QtWidgets.QMainWindow):
             if filtered_count > 0:
                 self._set_status(f"Filtered: {filtered_count} already processed, {len(files)} new files to process")
 
-        # Setup UI for processing
+        # Setup UI for processing (preserve table, update rows in-place)
         self.sds_progress.setValue(0)
-        self.sds_table.setRowCount(len(files))
-        for idx in range(len(files)):
-            self.sds_table.setItem(idx, 0, QtWidgets.QTableWidgetItem(files[idx].name))
-            self.sds_table.setItem(idx, 1, QtWidgets.QTableWidgetItem("-"))
-            self.sds_table.setItem(idx, 2, QtWidgets.QTableWidgetItem("⏳ Pending"))
+        # Build maps for file -> row index so we can update rows in real-time
+        self._processing_file_map: dict[Path, int] = {}
+        self._processing_name_map: dict[str, int] = {}
+        
+        # Find row indices for selected files in the existing table
+        for idx in range(self.sds_table.rowCount()):
+            file_item = self.sds_table.item(idx, 1)  # File name is in column 1
+            if file_item:
+                file_name = file_item.text().replace("✓ ", "")  # Remove checkmark if present
+                file_path = self._selected_sds_folder / file_name
+                if file_path in files:
+                    self._processing_file_map[file_path] = idx
+                    self._processing_name_map[file_path.name] = idx
+                    # Update Status (column 3) to show processing will start
+                    status_item = self.sds_table.item(idx, 3)
+                    if status_item:
+                        status_item.setText("⏳ Processing...")
+                        status_item.setForeground(QtGui.QColor(self.colors['text']))
 
         self._cancel_processing = False
         self.process_btn.setEnabled(False)
@@ -1340,6 +1414,29 @@ class MainWindow(QtWidgets.QMainWindow):
             on_result=self._on_sds_done,
             on_progress=self._on_sds_progress
         )
+
+    def _on_file_processed(self, fname: str, chemical: str, status: str, row_idx: int) -> None:
+        """Update table in real-time when a file is processed."""
+        status_display = self._format_status(status)
+        resolved_row = self._resolve_row_index(fname, row_idx)
+        if resolved_row is None:
+            return
+        # Column 0 has checkbox - don't touch it
+        # Column 1: File name - keep it as is (already set)
+        # Column 2: Update Chemical
+        chemical_item = self.sds_table.item(resolved_row, 2)
+        if chemical_item:
+            chemical_item.setText(chemical or "-")
+        else:
+            self.sds_table.setItem(resolved_row, 2, QtWidgets.QTableWidgetItem(chemical or "-"))
+        # Column 3: Update Status
+        status_item = self.sds_table.item(resolved_row, 3)
+        if status_item:
+            status_item.setText(status_display)
+            # Reset color to default
+            status_item.setForeground(QtGui.QColor(self.colors['text']))
+        else:
+            self.sds_table.setItem(resolved_row, 3, QtWidgets.QTableWidgetItem(status_display))
 
     def _on_sds_progress(self, percent: int, label: str) -> None:
         """Update progress bar and status during SDS processing."""
@@ -1374,13 +1471,23 @@ class MainWindow(QtWidgets.QMainWindow):
                 if signals:
                     status_emoji = "✅" if res.status in ("completed", "success") else "⚠️" if res.status == "partial" else "❌"
                     signals.message.emit(f"{status_emoji} {path.name}: {res.status}")
+                    mapped_row = self._processing_file_map.get(path)
+                    if mapped_row is None:
+                        mapped_row = self._processing_name_map.get(path.name, idx - 1)
+                    signals.file_result.emit(path.name, chemical, res.status, mapped_row)
                 
-                results.append((path.name, chemical, res.status, idx - 1))
+                mapped_row = self._processing_file_map.get(path)
+                if mapped_row is None:
+                    mapped_row = self._processing_name_map.get(path.name, idx - 1)
+                results.append((path.name, chemical, res.status, mapped_row))
             except Exception as exc:
                 logger.error("Failed to process %s: %s", path, exc)
                 if signals:
                     signals.error.emit(f"Failed: {path.name} ({exc})")
-                results.append((path.name, "", "error", idx - 1))
+                mapped_row = self._processing_file_map.get(path)
+                if mapped_row is None:
+                    mapped_row = self._processing_name_map.get(path.name, idx - 1)
+                results.append((path.name, "", "error", mapped_row))
         return results
 
     def _on_sds_done(self, result: object) -> None:
@@ -1390,16 +1497,31 @@ class MainWindow(QtWidgets.QMainWindow):
         if not isinstance(result, list):
             return
 
-        # Update table with final results
+        # Final update for any files that weren't updated in real-time
         for fname, chemical, status, row_idx in result:
             status_display = self._format_status(status)
-            self.sds_table.setItem(row_idx, 1, QtWidgets.QTableWidgetItem(fname))
-            self.sds_table.setItem(row_idx, 2, QtWidgets.QTableWidgetItem(chemical or "-"))
-            self.sds_table.setItem(row_idx, 3, QtWidgets.QTableWidgetItem(status_display))
+            resolved_row = self._resolve_row_index(fname, row_idx)
+            if resolved_row is None:
+                continue
+            # Column 0: checkbox - leave untouched
+            # Column 1: file name - already set
+            # Column 2: Chemical
+            chemical_item = self.sds_table.item(resolved_row, 2)
+            if chemical_item:
+                chemical_item.setText(chemical or "-")
+            # Column 3: Status
+            status_item = self.sds_table.item(resolved_row, 3)
+            if status_item:
+                status_item.setText(status_display)
+                status_item.setForeground(QtGui.QColor(self.colors['text']))
 
         self.sds_table.resizeColumnsToContents()
         self.sds_progress.setValue(100)
         self._refresh_db_stats()
+        
+        # Clear the processing map
+        self._processing_file_map = {}
+        self._processing_name_map = {}
 
         if self._cancel_processing:
             QtWidgets.QMessageBox.information(self, "Processing stopped", f"Processed {len(result)} files before stopping.")
@@ -1418,6 +1540,26 @@ class MainWindow(QtWidgets.QMainWindow):
             "processing": "🔄 Processing",
         }
         return status_map.get(status.lower(), f"✅ {status}")
+
+    def _resolve_row_index(self, fname: str, preferred_idx: int) -> int | None:
+        """
+        Resolve the target row for a file using known lookup maps or fallback to the preferred index.
+        Returns None if the row cannot be found (e.g., the table changed mid-run).
+        """
+        if 0 <= preferred_idx < self.sds_table.rowCount():
+            return preferred_idx
+        if hasattr(self, "_processing_name_map"):
+            mapped = self._processing_name_map.get(fname)
+            if mapped is not None and 0 <= mapped < self.sds_table.rowCount():
+                return mapped
+        # Fallback: search by filename in column 1 (with or without leading checkmark)
+        for idx in range(self.sds_table.rowCount()):
+            item = self.sds_table.item(idx, 1)
+            if item:
+                name = item.text().replace("✓ ", "")
+                if name == fname:
+                    return idx
+        return None
 
     def _on_build_matrix(self) -> None:
         self._set_status("Building matrices…")
