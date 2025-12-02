@@ -258,10 +258,20 @@ class MainWindow(QtWidgets.QMainWindow):
         self.use_rag_checkbox.setStyleSheet(
             f"QCheckBox {{"
             f"color: {self.colors['text']};"
+            f"spacing: 5px;"
             f"}}"
             f"QCheckBox::indicator {{"
+            f"width: 18px;"
+            f"height: 18px;"
             f"background-color: {self.colors['primary']};"
             f"border-radius: 3px;"
+            f"}}"
+            f"QCheckBox::indicator:checked {{"
+            f"background-color: {self.colors['primary']};"
+            f"image: url(data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'><path fill='white' d='M9 16.17L4.83 12l-1.42 1.41L9 19 21 7l-1.41-1.41L9 16.17z'/></svg>);"
+            f"}}"
+            f"QCheckBox::indicator:unchecked {{"
+            f"background-color: {self.colors['primary']};"
             f"}}"
         )
         controls.addWidget(self.use_rag_checkbox)
@@ -271,10 +281,20 @@ class MainWindow(QtWidgets.QMainWindow):
         self.process_all_checkbox.setStyleSheet(
             f"QCheckBox {{"
             f"color: {self.colors['text']};"
+            f"spacing: 5px;"
             f"}}"
             f"QCheckBox::indicator {{"
+            f"width: 18px;"
+            f"height: 18px;"
             f"background-color: {self.colors['primary']};"
             f"border-radius: 3px;"
+            f"}}"
+            f"QCheckBox::indicator:checked {{"
+            f"background-color: {self.colors['primary']};"
+            f"image: url(data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'><path fill='white' d='M9 16.17L4.83 12l-1.42 1.41L9 19 21 7l-1.41-1.41L9 16.17z'/></svg>);"
+            f"}}"
+            f"QCheckBox::indicator:unchecked {{"
+            f"background-color: {self.colors['primary']};"
             f"}}"
         )
         controls.addWidget(self.process_all_checkbox)
@@ -1091,9 +1111,20 @@ class MainWindow(QtWidgets.QMainWindow):
             # Style checkbox with primary blue background
             checkbox.setStyleSheet(
                 f"QCheckBox {{"
+                f"spacing: 4px;"
+                f"}}"
+                f"QCheckBox::indicator {{"
+                f"width: 16px;"
+                f"height: 16px;"
                 f"background-color: {self.colors['primary']};"
-                f"padding: 4px;"
-                f"border-radius: 3px;"
+                f"border-radius: 2px;"
+                f"}}"
+                f"QCheckBox::indicator:checked {{"
+                f"background-color: {self.colors['primary']};"
+                f"image: url(data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'><path fill='white' d='M9 16.17L4.83 12l-1.42 1.41L9 19 21 7l-1.41-1.41L9 16.17z'/></svg>);"
+                f"}}"
+                f"QCheckBox::indicator:unchecked {{"
+                f"background-color: {self.colors['primary']};"
                 f"}}"
             )
             container_layout.addWidget(checkbox)
