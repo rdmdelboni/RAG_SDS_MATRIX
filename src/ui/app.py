@@ -315,6 +315,7 @@ class MainWindow(QtWidgets.QMainWindow):
         controls.addStretch()
         layout.addLayout(controls)
 
+        progress_row = QtWidgets.QHBoxLayout()
         self.sds_progress = QtWidgets.QProgressBar()
         self.sds_progress.setStyleSheet(
             f"QProgressBar {{"
@@ -330,13 +331,83 @@ class MainWindow(QtWidgets.QMainWindow):
             f"}}"
         )
         self.sds_progress.setTextVisible(True)
-        layout.addWidget(self.sds_progress)
+        progress_row.addWidget(self.sds_progress)
 
-        self.sds_table = QtWidgets.QTableWidget(0, 3)
-        self.sds_table.setHorizontalHeaderLabels(["File", "Chemical", "Status"])
+        self.sds_file_counter = QtWidgets.QLabel("")
+        self.sds_file_counter.setStyleSheet(
+            f"color: {self.colors['text']};"
+            f"font-weight: 500;"
+        )
+        self.sds_file_counter.setAlignment(QtCore.Qt.AlignmentFlag.AlignRight | QtCore.Qt.AlignmentFlag.AlignVCenter)
+        progress_row.addWidget(self.sds_file_counter, 0, QtCore.Qt.AlignmentFlag.AlignRight)
+        layout.addLayout(progress_row)
+
+        self.sds_table = QtWidgets.QTableWidget(0, 4)
+        self.sds_table.setHorizontalHeaderLabels(["", "File", "Chemical", "Status"])
+        self.sds_table.setColumnWidth(0, 30)
         self.sds_table.horizontalHeader().setStretchLastSection(True)
         self._style_table(self.sds_table)
+
+        # Add info label for file counts with select all/unselect all buttons
+        info_row = QtWidgets.QHBoxLayout()
+
+        self.sds_info = QtWidgets.QLabel("")
+        self.sds_info.setStyleSheet(
+            f"color: {self.colors['text']};"
+            f"font-size: 12px;"
+        )
+        info_row.addWidget(self.sds_info)
+
+        select_all_btn = QtWidgets.QPushButton("Select All")
+        select_all_btn.setMaximumWidth(100)
+        select_all_btn.setStyleSheet(
+            f"QPushButton {{"
+            f"background-color: {self.colors['primary']};"
+            f"border: none;"
+            f"border-radius: 4px;"
+            f"color: {self.colors['text']};"
+            f"padding: 4px 8px;"
+            f"font-weight: 500;"
+            f"font-size: 11px;"
+            f"}}"
+            f"QPushButton:hover {{"
+            f"background-color: {self.colors.get('primary_hover', self.colors['button_hover'])};"
+            f"}}"
+            f"QPushButton:pressed {{"
+            f"background-color: {self.colors['primary']};"
+            f"}}"
+        )
+        select_all_btn.clicked.connect(self._on_select_all_files)
+        info_row.addWidget(select_all_btn)
+
+        unselect_all_btn = QtWidgets.QPushButton("Unselect All")
+        unselect_all_btn.setMaximumWidth(100)
+        unselect_all_btn.setStyleSheet(
+            f"QPushButton {{"
+            f"background-color: {self.colors['surface']};"
+            f"border: 1px solid {self.colors['overlay']};"
+            f"border-radius: 4px;"
+            f"color: {self.colors['text']};"
+            f"padding: 4px 8px;"
+            f"font-weight: 500;"
+            f"font-size: 11px;"
+            f"}}"
+            f"QPushButton:hover {{"
+            f"background-color: {self.colors['overlay']};"
+            f"}}"
+            f"QPushButton:pressed {{"
+            f"background-color: {self.colors['surface']};"
+            f"}}"
+        )
+        unselect_all_btn.clicked.connect(self._on_unselect_all_files)
+        info_row.addWidget(unselect_all_btn)
+
+        info_row.addStretch()
+        layout.addLayout(info_row)
         layout.addWidget(self.sds_table)
+
+        # Store selected files for processing
+        self.sds_selected_files: list[Path] = []
 
         return tab
 
@@ -660,7 +731,7 @@ class MainWindow(QtWidgets.QMainWindow):
             f"gridline-color: {self.colors['overlay']};"
             f"}}"
             f"QHeaderView::section {{"
-            f"background-color: {self.colors['header']};"
+            f"background-color: {self.colors['surface']};"
             f"color: {self.colors['text']};"
             f"padding: 4px;"
             f"border: none;"
@@ -669,13 +740,55 @@ class MainWindow(QtWidgets.QMainWindow):
             f"background-color: {self.colors['accent']};"
             f"color: {self.colors['bg']};"
             f"}}"
+            f"QScrollBar:vertical {{"
+            f"background-color: {self.colors['input']};"
+            f"width: 12px;"
+            f"margin: 0px;"
+            f"}}"
+            f"QScrollBar::handle:vertical {{"
+            f"background-color: {self.colors['overlay']};"
+            f"border-radius: 6px;"
+            f"min-height: 20px;"
+            f"}}"
+            f"QScrollBar::handle:vertical:hover {{"
+            f"background-color: {self.colors['subtext']};"
+            f"}}"
+            f"QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {{"
+            f"border: none;"
+            f"background: none;"
+            f"}}"
+            f"QScrollBar:horizontal {{"
+            f"background-color: {self.colors['input']};"
+            f"height: 12px;"
+            f"margin: 0px;"
+            f"}}"
+            f"QScrollBar::handle:horizontal {{"
+            f"background-color: {self.colors['overlay']};"
+            f"border-radius: 6px;"
+            f"min-width: 20px;"
+            f"}}"
+            f"QScrollBar::handle:horizontal:hover {{"
+            f"background-color: {self.colors['subtext']};"
+            f"}}"
+            f"QScrollBar::add-line:horizontal, QScrollBar::sub-line:horizontal {{"
+            f"border: none;"
+            f"background: none;"
+            f"}}"
         )
         table.verticalHeader().setStyleSheet(
             f"QHeaderView {{"
-            f"background-color: {self.colors['header']};"
+            f"background-color: {self.colors['surface']};"
             f"color: {self.colors['text']};"
             f"}}"
         )
+        # Style the corner button (top-left select all button)
+        corner_btn = table.findChild(QtWidgets.QAbstractButton)
+        if corner_btn:
+            corner_btn.setStyleSheet(
+                f"QAbstractButton {{"
+                f"background-color: {self.colors['primary']};"
+                f"}}"
+            )
 
     def _style_textedit(self, textedit: QtWidgets.QTextEdit) -> None:
         """Apply consistent styling to a text edit."""
@@ -933,11 +1046,86 @@ class MainWindow(QtWidgets.QMainWindow):
             return
         files = self._collect_sds_files(self._selected_sds_folder)
         self.sds_table.setRowCount(len(files))
+        self.sds_selected_files = files.copy()
+
         for idx, file_path in enumerate(files):
-            self.sds_table.setItem(idx, 0, QtWidgets.QTableWidgetItem(file_path.name))
-            self.sds_table.setItem(idx, 1, QtWidgets.QTableWidgetItem(""))
-            self.sds_table.setItem(idx, 2, QtWidgets.QTableWidgetItem("Pending"))
+            # Column 0: Checkbox
+            checkbox = QtWidgets.QCheckBox()
+            checkbox.setChecked(True)
+            checkbox.stateChanged.connect(self._on_file_selection_changed)
+            # Style checkbox with primary blue background
+            checkbox.setStyleSheet(
+                f"QCheckBox {{"
+                f"background-color: {self.colors['primary']};"
+                f"padding: 4px;"
+                f"border-radius: 3px;"
+                f"}}"
+            )
+            self.sds_table.setCellWidget(idx, 0, checkbox)
+
+            # Column 1: File name
+            self.sds_table.setItem(idx, 1, QtWidgets.QTableWidgetItem(file_path.name))
+            # Column 2: Chemical
+            self.sds_table.setItem(idx, 2, QtWidgets.QTableWidgetItem(""))
+            # Column 3: Status
+            self.sds_table.setItem(idx, 3, QtWidgets.QTableWidgetItem("Pending"))
+
         self.sds_table.resizeColumnsToContents()
+        self._update_sds_file_count()
+
+    def _on_file_selection_changed(self) -> None:
+        """Handle file selection/deselection in the table."""
+        self._update_sds_file_count()
+
+    def _update_sds_file_count(self) -> None:
+        """Update the info label showing file counts."""
+        total_files = self.sds_table.rowCount()
+        selected_files = 0
+        for idx in range(total_files):
+            widget = self.sds_table.cellWidget(idx, 0)
+            if widget:
+                checkbox = widget.findChild(QtWidgets.QCheckBox)
+                if checkbox and checkbox.isChecked():
+                    selected_files += 1
+        self.sds_info.setText(f"Files: {selected_files} selected / {total_files} listed")
+
+    def _on_select_all_files(self) -> None:
+        """Select all files in the SDS table."""
+        total_files = self.sds_table.rowCount()
+        for idx in range(total_files):
+            widget = self.sds_table.cellWidget(idx, 0)
+            if isinstance(widget, QtWidgets.QCheckBox):
+                widget.stateChanged.disconnect()
+                widget.setChecked(True)
+                widget.stateChanged.connect(self._on_file_selection_changed)
+        self._update_sds_file_count()
+
+    def _on_unselect_all_files(self) -> None:
+        """Unselect all files in the SDS table."""
+        total_files = self.sds_table.rowCount()
+        for idx in range(total_files):
+            widget = self.sds_table.cellWidget(idx, 0)
+            if isinstance(widget, QtWidgets.QCheckBox):
+                widget.stateChanged.disconnect()
+                widget.setChecked(False)
+                widget.stateChanged.connect(self._on_file_selection_changed)
+        self._update_sds_file_count()
+
+    def _get_selected_sds_files(self) -> list[Path]:
+        """Get list of selected files from the table."""
+        selected = []
+        for idx in range(self.sds_table.rowCount()):
+            widget = self.sds_table.cellWidget(idx, 0)
+            if widget:
+                checkbox = widget.findChild(QtWidgets.QCheckBox)
+                if checkbox and checkbox.isChecked():
+                    file_item = self.sds_table.item(idx, 1)
+                    if file_item and self._selected_sds_folder:
+                        file_name = file_item.text()
+                        file_path = self._selected_sds_folder / file_name
+                        if file_path.exists():
+                            selected.append(file_path)
+        return selected
 
     def _collect_sds_files(self, folder: Path) -> list[Path]:
         files: list[Path] = []
@@ -945,32 +1133,47 @@ class MainWindow(QtWidgets.QMainWindow):
             files.extend(folder.rglob(f"*{suffix}"))
         return sorted(files)
 
-    def _is_file_processed(self, file_path: Path) -> bool:
-        """Check if a file has already been successfully processed."""
-        doc = self.db.get_document_by_path(file_path)
-        if doc is None:
-            return False
-        return doc.status == "completed"
-
     def _on_process_sds(self) -> None:
         if not self._selected_sds_folder:
             QtWidgets.QMessageBox.warning(self, "No folder", "Select an SDS folder first.")
             return
-        files = self._collect_sds_files(self._selected_sds_folder)
+
+        # Get selected files from table
+        files = self._get_selected_sds_files()
         if not files:
-            QtWidgets.QMessageBox.information(self, "No files", "No supported SDS files found.")
+            QtWidgets.QMessageBox.information(self, "No files", "Please select files to process.")
             return
+
+        logger.info("Selected %d SDS files for processing", len(files))
 
         # Filter out already processed files if checkbox is unchecked
         process_all = self.process_all_checkbox.isChecked()
+        original_count = len(files)
+
         if not process_all:
-            files = [f for f in files if not self._is_file_processed(f)]
+            self._set_status(f"Checking database for {original_count} files...")
+            logger.info("Checking which files have been processed...")
+
+            # Batch load all processed file paths for fast lookup
+            processed_paths = self.db.get_processed_file_paths()
+            logger.debug("Found %d already processed files in database", len(processed_paths))
+
+            # Filter files - fast set lookup instead of per-file database query
+            files = [f for f in files if str(f) not in processed_paths]
+            filtered_count = original_count - len(files)
+
+            logger.info("Filtered: %d already processed, %d new files to process", filtered_count, len(files))
+
             if not files:
                 QtWidgets.QMessageBox.information(
                     self, "All processed",
-                    "All files have already been processed. Check 'Process all files' to reprocess."
+                    f"All {original_count} files have already been processed.\n\n"
+                    "Check 'Process all files' to reprocess them."
                 )
                 return
+
+            if filtered_count > 0:
+                self._set_status(f"Filtered: {filtered_count} already processed, {len(files)} new files to process")
 
         # Setup UI for processing
         self.sds_progress.setValue(0)
@@ -984,9 +1187,11 @@ class MainWindow(QtWidgets.QMainWindow):
         self.process_btn.setEnabled(False)
         self.stop_btn.setEnabled(True)
         use_rag = self.use_rag_checkbox.isChecked()
-        status_msg = f"Processing {len(files)} files…"
-        if not process_all:
-            status_msg += " (skipping already processed)"
+
+        if process_all:
+            status_msg = f"Processing {len(files)} files (force reprocess all)…"
+        else:
+            status_msg = f"Processing {len(files)} new files…"
         self._set_status(status_msg)
         self._start_task(
             self._process_sds_task,
@@ -1000,6 +1205,7 @@ class MainWindow(QtWidgets.QMainWindow):
     def _on_sds_progress(self, percent: int, label: str) -> None:
         """Update progress bar and status during SDS processing."""
         self.sds_progress.setValue(percent)
+        self.sds_file_counter.setText(label)
         self._set_status(f"Processing: {label}")
 
     def _process_sds_task(self, files: list[Path], use_rag: bool, force_reprocess: bool = False, *, signals: WorkerSignals | None = None) -> list[tuple[str, str, str, int]]:
@@ -1016,7 +1222,7 @@ class MainWindow(QtWidgets.QMainWindow):
 
             if signals:
                 pct = int(idx / total * 100)
-                signals.progress.emit(pct, f"{path.name} ({idx}/{total})")
+                signals.progress.emit(pct, f"{idx}/{total}")
                 signals.message.emit(f"Processing {path.name}")
             try:
                 res = processor.process(path, use_rag=use_rag, force_reprocess=force_reprocess)
@@ -1041,21 +1247,21 @@ class MainWindow(QtWidgets.QMainWindow):
     def _on_sds_done(self, result: object) -> None:
         self.process_btn.setEnabled(True)
         self.stop_btn.setEnabled(False)
-        
+
         if not isinstance(result, list):
             return
-        
+
         # Update table with final results
         for fname, chemical, status, row_idx in result:
             status_display = self._format_status(status)
-            self.sds_table.setItem(row_idx, 0, QtWidgets.QTableWidgetItem(fname))
-            self.sds_table.setItem(row_idx, 1, QtWidgets.QTableWidgetItem(chemical or "-"))
-            self.sds_table.setItem(row_idx, 2, QtWidgets.QTableWidgetItem(status_display))
-        
+            self.sds_table.setItem(row_idx, 1, QtWidgets.QTableWidgetItem(fname))
+            self.sds_table.setItem(row_idx, 2, QtWidgets.QTableWidgetItem(chemical or "-"))
+            self.sds_table.setItem(row_idx, 3, QtWidgets.QTableWidgetItem(status_display))
+
         self.sds_table.resizeColumnsToContents()
         self.sds_progress.setValue(100)
         self._refresh_db_stats()
-        
+
         if self._cancel_processing:
             QtWidgets.QMessageBox.information(self, "Processing stopped", f"Processed {len(result)} files before stopping.")
         else:
