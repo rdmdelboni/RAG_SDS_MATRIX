@@ -2,270 +2,100 @@
 
 A RAG-enhanced Safety Data Sheet (SDS) processor that extracts chemical safety information and generates compatibility matrices using a hybrid approach combining heuristic extraction, LLM refinement, and RAG-augmented generation.
 
-## Features
+![Project Banner](https://placeholder.com/banner.png)
+*(Placeholder: Add a banner image here showing the application running)*
+
+## 🚀 Features
 
 - **Hybrid Extraction Pipeline**: Combines regex heuristics, LLM refinement, PubChem enrichment, and RAG augmentation
 - **PubChem Integration**: Automatic validation and enrichment using PubChem's chemical database
   - Validates CAS numbers, product names, and molecular formulas
   - Fills missing fields (molecular weight, IUPAC names, structure identifiers)
   - Enriches GHS hazard statements (H/P codes) with complete classifications
-  - Detects inconsistencies and data quality issues
+- **CAMEO Chemicals Integration**: Uses NOAA's CAMEO database for accurate reactivity predictions
 - **Multi-format Support**: Process PDF, TXT, MD, and DOCX SDS documents
 - **Chemical Compatibility Matrix**: Automatic generation of incompatibility matrices
-- **Structured Data Integration**: JSONL-based incompatibility rules and hazard records
 - **Knowledge Base Management**: Build and query a vector database of chemical safety documentation
 - **Decision Auditing**: Full traceability of compatibility decisions with justifications
-- **Multi-format Export**: CSV, Excel, and JSON export with separate dangerous chemicals reports
-- **Regex Lab for Vendors**: Catalog-driven manufacturer regexes with a CLI tester to cut LLM usage on known layouts
+- **Regex Lab**: Tool for testing and optimizing vendor-specific extraction patterns
 
-## Architecture
+## 📸 Visual Overview
 
-```
-┌─────────────────────────────────────────────────────────────┐
-│                         UI Layer                             │
-│         (PySide6 / Qt - Desktop GUI, follows OS theme)       │
-└─────────────────────────────────────────────────────────────┘
-                            │
-┌─────────────────────────────────────────────────────────────┐
-│                    Processing Pipeline                       │
-│  ┌──────────────┐  ┌──────────────┐  ┌──────────────┐     │
-│  │  Heuristics  │→ │  LLM Refine  │→ │  PubChem     │     │
-│  │  (Regex)     │  │  (Ollama)    │  │  Enrichment  │     │
-│  └──────────────┘  └──────────────┘  └──────────────┘     │
-│                                              ↓               │
-│                         ┌──────────────────────────────┐    │
-│                         │   RAG Completion (Optional)  │    │
-│                         │      (ChromaDB)              │    │
-│                         └──────────────────────────────┘    │
-└─────────────────────────────────────────────────────────────┘
-                            │
-┌─────────────────────────────────────────────────────────────┐
-│                    Data Layer                                │
-│  ┌──────────────┐  ┌──────────────┐  ┌──────────────┐     │
-│  │   DuckDB     │  │   ChromaDB   │  │  PubChem API │     │
-│  │ (Structured) │  │  (Vectors)   │  │  (External)  │     │
-│  └──────────────┘  └──────────────┘  └──────────────┘     │
-└─────────────────────────────────────────────────────────────┘
-```
+### Main Dashboard
+*(Placeholder: Screenshot of the main application window showing the tabs)*
 
-## Requirements
-
-- **Python**: 3.11+
-- **Ollama**: Running locally with models installed
-- **System**: Linux, macOS, or Windows with WSL
-
-## Installation
-
-### 1. Clone the Repository
-
-```bash
-
-```bash
-python -m venv venv
-source venv/bin/activate  # On Windows: venv\Scripts\activate
-```
-
-### 3. Install Dependencies
-
-```bash
-pip install -r requirements.txt
-```
-
-### 4. Install Ollama Models
-
-```bash
-ollama pull qwen2.5:7b-instruct-q4_K_M
-ollama pull llama3.1:8b
-ollama pull qwen3-embedding:4b
-ollama pull deepseek-ocr:latest  # Optional, for OCR
-```
-
-### 5. Configure Environment
-
-```bash
-# Copy example configuration
-cp .env.example .env
-
-# Create local config for API keys (not tracked by git)
-cp .env.example .env.local
-
-# Edit .env.local and add your API keys if using external services
-nano .env.local
-```
-
-### 6. Initialize Data Directories
-
-The application will automatically create required directories on first run:
-- `data/chroma_db/` - Vector database
-- `data/duckdb/` - Structured database
-- `data/logs/` - Application logs
-- `data/input/` - Input documents
-- `data/output/` - Export results
-
-## Usage
-
-### Start the Application
-
-```bash
-python main.py
-```
-
-### Vendor Regex Lab (fewer LLM calls on known layouts)
-
-Test regex profiles against a sample SDS and tune patterns before running the full pipeline:
-
-```bash
-python scripts/regex_lab.py --list-profiles
-python scripts/regex_lab.py --file path/to/sds.pdf --profile "Sigma-Aldrich"
-```
-
-### Harvester provenance and sync
-- Fetch SDS by CAS with multi-provider scraping and DB logging:
-  `./scripts/fetch_sds.py 67-64-1 --output data/input/harvested`
-- Enable inventory sync (copy): `OE_SYNC_ENABLED=true OE_SYNC_EXPORT_DIR=/tmp/stage ./scripts/fetch_sds.py ...`
-- Enable inventory sync (MySQL Open Enventory style):
-  `OE_SYNC_ENABLED=true OE_SYNC_MODE=mysql OE_SYNC_DB_HOST=... OE_SYNC_DB_USER=... OE_SYNC_DB_PASSWORD=... OE_SYNC_DB_NAME=... ./scripts/fetch_sds.py ...`
-
-### SDS generation (stub)
-- Generate a simple CLP-style SDS PDF from structured JSON:
-  `./scripts/generate_sds_stub.py --data examples/sds_stub.json --out output/sds_stub.pdf`
-- Bundle matrix + SDS PDFs for lab packets:
-  `./scripts/export_experiment_packet.py --matrix data/output/matrix.csv --sds-dir data/input/harvested --cas 67-64-1 64-17-5 --out packets`
-
-### Automation & scheduling
-- Harvest + process in one step: `./scripts/harvest_and_process.py --cas-file cas_list.txt --process`
-- Scheduled harvesting: `./scripts/harvest_scheduler.py --cas-file cas_list.txt --interval 60 --process`
-- Packaging for labs (PyInstaller): see `packaging/packaging.md`
-
-### Basic Workflow
-
-1. **Build Knowledge Base** (RAG Tab):
-   - Click "Add Documents" to load PDF/TXT files
-   - Or "Add URL" to fetch web content
-   - Documents are chunked and indexed for semantic search
-
-2. **Process SDS Documents** (SDS Tab):
-   - Click "Select Folder" to choose directory with SDS files
-   - Toggle "Use RAG" for dangerous chemical enrichment
-   - Click "Process" to extract chemical data
-
-3. **Generate Matrix**:
-   - Click "Build Matrix" to create compatibility matrix
-   - View results in tabbed interface:
-     - Statistics
-     - Incompatibility Matrix
-     - Hazard Classes
-     - Dangerous Chemicals
-
-4. **Export Results**:
-   - Click "Export" to save matrices
-   - Supports CSV, Excel, JSON formats
-   - Includes separate dangerous chemicals report
+### Matrix View
+*(Placeholder: Screenshot of the generated compatibility matrix with color-coded cells)*
 
 ### RAG Search
+*(Placeholder: Screenshot of the RAG search interface with a query and result)*
 
-Use the RAG Search feature to query the knowledge base:
+## 🏗️ Architecture
 
-```
-Query: "What are the incompatibilities of sodium hydroxide?"
-```
+The system is built on a modular architecture separating the UI, data processing, and storage layers.
 
-The system retrieves relevant documents and generates contextual answers using LLM.
-
-## Advanced Features
-
-### Structured Data Ingestion
-
-Ingest JSONL files with incompatibility rules and hazard data:
-
-```bash
-python scripts/ingest_mrlp.py \
-  --incompatibilities data/datasets/mrlp/incompatibilities.jsonl \
-  --hazards data/datasets/mrlp/hazards.jsonl
-```
-
-**Incompatibilities Format:**
-```json
-{"cas_a": "1310-73-2", "cas_b": "7664-93-9", "rule": "I", "source": "NFPA"}
-```
-
-**Hazards Format:**
-```json
-{"cas": "1310-73-2", "hazard_flags": {"dangerous": true}, "idlh": 10, "env_risk": true}
-```
-
-### Check System Status
-
-```bash
-python scripts/status.py
+```mermaid
+graph TD
+    User[User / UI] -->|Uploads SDS| Ingest[Ingestion Pipeline]
+    User -->|Queries| RAG[RAG System]
+    
+    subgraph "Ingestion Pipeline"
+        Ingest --> Heuristics[Regex Heuristics]
+        Heuristics -->|Low Confidence| LLM[LLM Refinement]
+        Heuristics -->|High Confidence| PubChem[PubChem Enrichment]
+        LLM --> PubChem
+        PubChem --> DB[(DuckDB Structured)]
+        PubChem --> Vector[(ChromaDB Vectors)]
+    end
+    
+    subgraph "RAG System"
+        Vector -->|Retrieve Context| Context[Context Window]
+        Context -->|Augment Prompt| LLM_RAG[LLM Generation]
+        LLM_RAG -->|Answer| User
+    end
+    
+    subgraph "Matrix Generation"
+        DB --> MatrixBuilder[Matrix Builder]
+        Rules[Incompatibility Rules] --> MatrixBuilder
+        Hazards[Hazard Data] --> MatrixBuilder
+        MatrixBuilder -->|Generate| Matrix[Compatibility Matrix]
+    end
 ```
 
-Shows:
-- Documents processed
-- RAG documents indexed
-- Incompatibility rules
-- Hazard records
-- Matrix decisions logged
+## 🔄 Workflows
 
-## MRLP Sources & Whitelist
+### SDS Processing Pipeline
 
-- The ingestion pipeline uses a high-trust whitelist of domains (UNIFAL, CAMEO/NOAA, CETESB, NIOSH/CDC, OSHA, CAS, ABNT, gov.br, NFPA, UNECE/GHS). This is configured via the `ALLOWED_SOURCE_DOMAINS` environment variable.
-- Override or extend the whitelist in `.env` (comma-separated):  
-   `ALLOWED_SOURCE_DOMAINS=unifal-mg.edu.br,cameochemicals.noaa.gov,cdc.gov,osha.gov,cetesb.sp.gov.br`
-- Ingestion methods (`ingest_url`, `ingest_simple_urls`, Google CSE results, Bright Data snapshots, Craw4AI seeds) skip any URL whose domain is not whitelisted (flagged as `domain_not_allowed` / `not_whitelisted`).
-- The `MatrixBuilder` prioritizes structured incompatibility rules (UNIFAL/CAMEO/NFPA) before SDS free-text matches and hazard-based elevation.
+1.  **Text Extraction**: Converts PDF/DOCX to text
+2.  **Heuristic Analysis**: Applies regex patterns to find CAS, UN numbers, and Hazards
+3.  **LLM Refinement**: Uses local LLM (Ollama) to fix extraction errors if confidence is low
+4.  **Enrichment**: Validates data against PubChem and CAMEO databases
+5.  **Storage**: Saves structured data to DuckDB and vector embeddings to ChromaDB
 
-### Configuration Options
+### Matrix Generation Pipeline
 
-Edit `.env` or `.env.local`:
+1.  **Data Retrieval**: Fetches processed chemicals from DuckDB
+2.  **Rule Application**: Applies incompatibility rules from:
+    *   **MRLP**: Mixed Reactivity Logic Rules
+    *   **CAMEO**: NOAA Reactivity Data
+    *   **Manual Overrides**: User-defined rules
+3.  **Hazard Elevation**: Checks IDLH and environmental risks
+4.  **Matrix Construction**: Builds the N x N compatibility grid
 
-```bash
-# LLM Settings
-OLLAMA_BASE_URL=http://localhost:11434
-OLLAMA_EXTRACTION_MODEL=qwen2.5:7b-instruct-q4_K_M
-LLM_TEMPERATURE=0.1
-LLM_MAX_TOKENS=2000
-
-# Processing
-MAX_WORKERS=8
-CHUNK_SIZE=1000
-CHUNK_OVERLAP=200
-
-# Hazard Threshold (IDLH in ppm)
-HAZARD_IDLH_THRESHOLD=50
-
-# UI
-UI_LANGUAGE=pt  # or 'en'
-UI_THEME=dark   # or 'light'
-```
-
-## Testing
-
-Run the test suite:
-
-```bash
-# All tests
-pytest
-
-# With coverage
-pytest --cov=src --cov-report=html
-
-# Specific test file
-pytest tests/test_matrix_builder.py -v
-```
-
-## Project Structure
+## 📂 Project Structure
 
 ```
 RAG_SDS_MATRIX/
 ├── main.py                 # Application entry point
 ├── requirements.txt        # Python dependencies
-├── .env.example           # Configuration template
-├── .gitignore             # Git exclusions
+├── pytest.ini             # Test configuration
+├── README.md              # This file
+├── TODO.md                # Development tasks
 │
 ├── src/                   # Source code
 │   ├── config/           # Settings, constants, i18n
 │   ├── database/         # DuckDB persistence
+│   ├── harvester/        # Web scraping for SDS documents
 │   ├── matrix/           # Compatibility matrix building
 │   ├── models/           # Ollama LLM client
 │   ├── rag/              # Vector store, chunking, retrieval
@@ -279,9 +109,38 @@ RAG_SDS_MATRIX/
 │   ├── test_sds_processor.py
 │   └── ...
 │
-├── scripts/              # Utility scripts
+├── scripts/              # Python utility scripts
 │   ├── ingest_mrlp.py   # Structured data ingestion
+│   ├── fetch_sds.py     # SDS harvester
+│   ├── sds_pipeline.py  # SDS processing pipeline
 │   └── status.py        # System status check
+│
+├── bin/                  # Shell convenience scripts
+│   ├── backup_rag.sh    # Quick RAG backup
+│   ├── process_sds_with_rag.sh  # RAG-enhanced processing
+│   └── run_sds_pipeline.sh      # Complete pipeline
+│
+├── guides/               # Feature documentation
+│   ├── QUICK_START_GUIDE.md
+│   ├── CAMEO_SETUP.md
+│   ├── PUBCHEM_ENRICHMENT_GUIDE.md
+│   └── ...
+│
+├── docs/                 # Technical documentation
+│   ├── USAGE_GUIDE.md
+│   ├── RAG_OPTIMIZATION_GUIDE.md
+│   └── ...
+│
+├── examples/             # Example scripts
+│   └── rag_tracking_example.py
+│
+├── packaging/            # Deployment configuration
+│   └── packaging.md
+│
+├── archive/              # Historical documentation
+│   ├── implementation_notes/
+│   ├── session_notes/
+│   └── old_scripts/
 │
 └── data/                 # Data directories (auto-created)
     ├── chroma_db/       # Vector database
@@ -291,111 +150,84 @@ RAG_SDS_MATRIX/
     └── output/          # Export results
 ```
 
-## How It Works
+## 📚 Documentation & Guides
 
-### Extraction Pipeline
+We have organized documentation to help you get started:
 
-1. **Heuristic Extraction** (Fast, ~1s):
-   - Regex patterns for CAS numbers, UN numbers, hazard classes
-   - Section-based extraction (ABNT NBR 14725 sections)
-   - Confidence scoring based on pattern matches
+- **[Guides](/guides/)**: User-friendly guides for specific features (CAMEO, PubChem, RAG).
+- **[Technical Docs](/docs/)**: Deep dives into architecture and configuration.
+- **[Scripts](/scripts/)**: Utility scripts for automation and maintenance.
 
-2. **LLM Refinement** (If needed, ~5-10s):
-   - Triggered when heuristic confidence < 82%
-   - Uses Ollama with task-specific prompts
-   - Validates and improves extraction quality
+## 🛠️ Installation
 
-3. **RAG Enrichment** (For dangerous chemicals):
-   - Searches vector database for relevant context
-   - Augments incompatibility data with external knowledge
-   - Provides justifications for safety decisions
-
-### Matrix Building
-
-1. **Data Collection**: Fetch processed SDS extractions from database
-2. **Rule Matching**: Apply structured incompatibility rules (JSONL)
-3. **Hazard Elevation**: Upgrade compatibility based on IDLH/environmental risk
-4. **Decision Logging**: Record all decisions with source attribution
-5. **Export**: Generate CSV/Excel/JSON with full audit trail
-
-## Troubleshooting
-
-### Ollama Connection Issues
+### 1. Clone and Setup
 
 ```bash
-# Check if Ollama is running
-curl http://localhost:11434/api/tags
-
-# Start Ollama
-ollama serve
+git clone https://github.com/rdmdelboni/RAG_SDS_MATRIX.git
+cd RAG_SDS_MATRIX
+python -m venv .venv
+source .venv/bin/activate  # On Windows: .venv\Scripts\activate
 ```
 
-### Missing Dependencies
+### 2. Install Dependencies
 
 ```bash
-# Reinstall all dependencies
-pip install -r requirements.txt --force-reinstall
+pip install -r requirements.txt
 ```
 
-### Database Issues
+### 3. Install Ollama Models
 
 ```bash
-# Remove and reinitialize databases
-rm -rf data/chroma_db data/duckdb
-python main.py  # Will recreate databases
+ollama pull qwen2.5:7b-instruct-q4_K_M
+ollama pull llama3.1:8b
+ollama pull qwen3-embedding:4b
 ```
 
-### Test Discovery Issues
+### 4. Configure Environment
 
-Create `pytest.ini`:
-```ini
-[pytest]
-testpaths = tests
-python_files = test_*.py
-python_classes = Test*
-python_functions = test_*
+```bash
+cp .env.example .env
+# Edit .env with your settings
 ```
 
-## Performance Tips
+## 🚦 Usage
 
-1. **Adjust Workers**: Increase `MAX_WORKERS` for faster batch processing
-2. **Confidence Threshold**: Raise to 0.9 to skip more LLM calls
-3. **Chunk Size**: Reduce for faster vector search, increase for better context
-4. **Model Selection**: Use smaller Ollama models for faster processing
+### Start the Application
 
-## Security
+```bash
+python main.py
+```
 
-- API keys stored in `.env.local` (not tracked by git)
-- Local LLM processing (no data sent to external APIs)
-- File permissions restricted on sensitive files (600)
-- Content hashing prevents duplicate processing
+### Command Line Tools
 
-## Contributing
+The project includes several convenience scripts in the `bin/` directory:
+
+- **Process SDS**: `./bin/process_sds_with_rag.sh /path/to/sds`
+- **Run Pipeline**: `./bin/run_sds_pipeline.sh /path/to/sds`
+- **Backup Data**: `./bin/backup_rag.sh`
+
+## 🧪 Testing
+
+Run the test suite to ensure everything is working:
+
+```bash
+pytest
+```
+
+## 🤝 Contributing
 
 1. Fork the repository
-2. Create a feature branch (`git checkout -b feature/amazing-feature`)
-3. Commit your changes (`git commit -m 'Add amazing feature'`)
-4. Push to the branch (`git push origin feature/amazing-feature`)
+2. Create a feature branch
+3. Commit your changes
+4. Push to the branch
 5. Open a Pull Request
 
-## License
+## 📄 License
 
 This project is licensed under the MIT License - see the LICENSE file for details.
 
-## Acknowledgments
-
-- **LangChain**: RAG orchestration
-- **ChromaDB**: Vector database
-- **DuckDB**: Analytical database
-- **Ollama**: Local LLM inference
-- **PySide6 (Qt)**: Desktop UI framework
-
-## Support
-
-For issues, questions, or contributions, please open an issue on GitHub.
-
 ---
 
-**Version**: 1.0.0  
-**Last Updated**: November 22, 2025  
-**Status**: Production Ready ✅
+**Version**: 1.1.0  
+**Last Updated**: December 3, 2025  
+**Status**: Active Development 🚧
