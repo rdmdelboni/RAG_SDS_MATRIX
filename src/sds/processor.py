@@ -18,7 +18,7 @@ from .external_validator import ExternalValidator
 from .heuristics import HeuristicExtractor
 from .llm_extractor import LLMExtractor
 from .pubchem_enrichment import PubChemEnricher
-from .validator import FieldValidator, validate_extraction_result
+from .validator import FieldValidator, validate_extraction_result, validate_full_consistency
 
 logger = get_logger(__name__)
 
@@ -537,6 +537,22 @@ class SDSProcessor:
 
         # Cross-field validation
         extractions = self._cross_validate_fields(extractions)
+
+        # Internal Hazard Consistency Check
+        consistency_report = validate_full_consistency(extractions)
+        if consistency_report and consistency_report["status"] == "inconsistent":
+            logger.warning("Internal hazard inconsistency found: %s", consistency_report)
+            # We can attach this to a specific field or a global metadata field.
+            # Let's attach it to 'h_statements' or 'hazard_class' as a warning.
+            target_field = "h_statements" if "h_statements" in extractions else "hazard_class"
+            if target_field in extractions:
+                extractions[target_field].setdefault("validation_message", "")
+                msg = f"Inconsistent with composition: Missing {len(consistency_report['missing_hazards'])} calculated hazards."
+                extractions[target_field]["validation_message"] += (" | " if extractions[target_field]["validation_message"] else "") + msg
+                extractions[target_field]["validation_status"] = "warning"
+            
+            # Store full report in a special meta-field
+            extractions["_hazard_consistency"] = consistency_report
 
         # Product name normalization (non-destructive)
         if "product_name" in extractions and "value" in extractions["product_name"]:

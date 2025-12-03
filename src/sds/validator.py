@@ -6,6 +6,7 @@ from typing import Any
 
 from ..config.constants import EXTRACTION_FIELDS, HAZARD_CLASSES, VALIDATION_THRESHOLDS
 from ..utils.logger import get_logger
+from .hazard_calculator import HazardCalculator
 
 logger = get_logger(__name__)
 
@@ -14,6 +15,34 @@ class FieldValidator:
     """Validate extracted fields with confidence-based status."""
 
     HAZARD_CLASSES = set(HAZARD_CLASSES)
+
+    def __init__(self):
+        self.calculator = HazardCalculator()
+
+    def check_consistency(self, extractions: dict[str, dict[str, Any]]) -> dict[str, Any] | None:
+        """
+        Check internal consistency between composition and hazards.
+        Returns a consistency report or None if data is missing.
+        """
+        comp_text = extractions.get("composition", {}).get("value")
+        h_statements = extractions.get("h_statements", {}).get("value")
+        
+        if not comp_text or not h_statements:
+            return None
+            
+        # Parse components
+        components = self.calculator.parse_composition(comp_text)
+        if not components:
+            return None
+            
+        # Calculate expected hazards
+        calculated = self.calculator.calculate_hazards(components)
+        
+        # Parse declared hazards (simple split)
+        declared = [h.strip() for h in h_statements.split(',') if h.strip()]
+        
+        # Compare
+        return self.calculator.validate_against_declared(calculated, declared)
 
     def validate_field(
         self,
@@ -218,3 +247,17 @@ def validate_extraction_result(
     result["validation_message"] = message
 
     return result
+
+
+def validate_full_consistency(extractions: dict[str, dict[str, Any]]) -> dict[str, Any] | None:
+    """
+    Perform cross-field consistency checks on the full extraction set.
+    
+    Args:
+        extractions: Complete dictionary of all extracted fields
+        
+    Returns:
+        Consistency report dictionary or None
+    """
+    validator = FieldValidator()
+    return validator.check_consistency(extractions)
