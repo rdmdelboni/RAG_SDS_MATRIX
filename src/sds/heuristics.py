@@ -19,6 +19,7 @@ class HeuristicExtractor:
         field_name: str,
         text: str,
         sections: dict[int, str] | None = None,
+        profile: Any = None,
     ) -> dict[str, Any] | None:
         """Extract a single field using heuristics.
 
@@ -26,10 +27,28 @@ class HeuristicExtractor:
             field_name: Field to extract (e.g., 'cas_number')
             text: Full document text
             sections: Extracted SDS sections
+            profile: Optional ManufacturerProfile with overrides
 
         Returns:
             Dictionary with value, confidence, context or None
         """
+        # Check for profile regex override
+        if profile and profile.regex_overrides and field_name in profile.regex_overrides:
+            override_pattern = profile.regex_overrides[field_name]
+            try:
+                match = re.search(override_pattern, text, re.IGNORECASE | re.MULTILINE)
+                if match:
+                    val = match.group(1).strip() if match.groups() else match.group(0).strip()
+                    context = text[max(0, match.start() - 50) : match.end() + 50].strip()
+                    return {
+                        "value": val,
+                        "confidence": 0.95, # High confidence for profile match
+                        "context": context,
+                        "source": f"heuristic_profile_{profile.name}",
+                    }
+            except Exception as e:
+                logger.debug(f"Profile regex failed for {field_name}: {e}")
+
         # Find field definition
         field_def = next(
             (f for f in EXTRACTION_FIELDS if f.name == field_name),
@@ -90,12 +109,14 @@ class HeuristicExtractor:
         self,
         text: str,
         sections: dict[int, str] | None = None,
+        profile: Any = None,
     ) -> dict[str, dict[str, Any]]:
         """Extract all fields from document.
 
         Args:
             text: Full document text
             sections: Extracted sections
+            profile: Optional ManufacturerProfile
 
         Returns:
             Dictionary mapping field names to extraction results
@@ -104,7 +125,7 @@ class HeuristicExtractor:
 
         for field_def in EXTRACTION_FIELDS:
             try:
-                result = self.extract_field(field_def.name, text, sections)
+                result = self.extract_field(field_def.name, text, sections, profile)
                 if result:
                     results[field_def.name] = result
             except Exception as e:

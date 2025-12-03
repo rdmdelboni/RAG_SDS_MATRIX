@@ -19,6 +19,7 @@ from .heuristics import HeuristicExtractor
 from .llm_extractor import LLMExtractor
 from .pubchem_enrichment import PubChemEnricher
 from .validator import FieldValidator, validate_extraction_result, validate_full_consistency
+from .profile_router import ProfileRouter, ManufacturerProfile
 
 logger = get_logger(__name__)
 
@@ -54,6 +55,7 @@ class SDSProcessor:
         self.pubchem_enricher = PubChemEnricher()
         self.confidence_scorer = ConfidenceScorer()
         self.chunker = TextChunker()
+        self.router = ProfileRouter()
 
     def process(self, file_path: Path, use_rag: bool = True, force_reprocess: bool = False) -> ProcessingResult:
         """Process a single SDS document.
@@ -172,8 +174,11 @@ class SDSProcessor:
             text = extracted["text"]
             sections = extracted.get("sections", {})
 
+            # Detect Manufacturer Profile
+            profile = self.router.identify_profile(text)
+
             # PASS 1: Heuristics (fast, high-precision fields)
-            extractions = self._extraction_pass_heuristics(text, sections)
+            extractions = self._extraction_pass_heuristics(text, sections, profile)
 
             # PASS 2: LLM for uncertain/missing fields
             extractions = self._extraction_pass_llm(extractions, text, sections)
@@ -388,18 +393,19 @@ class SDSProcessor:
         return normalized
 
     def _extraction_pass_heuristics(
-        self, text: str, sections: dict[int, str]
+        self, text: str, sections: dict[int, str], profile: ManufacturerProfile
     ) -> dict[str, dict[str, Any]]:
         """Pass 1: Fast heuristic extraction with regex patterns.
 
         Args:
             text: Full document text
             sections: Extracted sections
+            profile: Manufacturer Profile
 
         Returns:
             Dictionary of extracted fields
         """
-        return self.heuristics.extract_all_fields(text, sections)
+        return self.heuristics.extract_all_fields(text, sections, profile)
 
     def _extraction_pass_llm(
         self,
