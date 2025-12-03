@@ -158,18 +158,28 @@ class SDSExtractor:
             # Trigger OCR if pdfminer logged many graphics warnings
             warn_threshold = settings.processing.pdf_graphics_warning_threshold
             if warn_threshold > 0 and warning_counter.count >= warn_threshold:
-                logger.info(
-                    "Triggering OCR fallback due to %d PDF graphics warnings (threshold=%d)",
-                    warning_counter.count,
-                    warn_threshold,
-                )
-                try:
-                    ocr_text = self._ocr_pdf_full(file_path)
-                    if ocr_text and len(ocr_text.strip()) > len(full_text.strip()) * 0.5:
-                        full_text = ocr_text
-                        logger.info("Full OCR fallback used after graphics warnings")
-                except Exception as exc:  # pragma: no cover
-                    logger.warning("OCR fallback after graphics warnings failed: %s", exc)
+                min_chars_for_graphics = min_avg_chars * 0.5
+                if avg_chars >= min_chars_for_graphics:
+                    logger.info(
+                        "Skipping graphics-warning OCR: avg_chars=%.1f >= %.1f (warnings=%d, threshold=%d)",
+                        avg_chars,
+                        min_chars_for_graphics,
+                        warning_counter.count,
+                        warn_threshold,
+                    )
+                else:
+                    logger.info(
+                        "Triggering OCR fallback due to %d PDF graphics warnings (threshold=%d)",
+                        warning_counter.count,
+                        warn_threshold,
+                    )
+                    try:
+                        ocr_text = self._ocr_pdf_full(file_path)
+                        if ocr_text and len(ocr_text.strip()) > len(full_text.strip()) * 0.5:
+                            full_text = ocr_text
+                            logger.info("Full OCR fallback used after graphics warnings")
+                    except Exception as exc:  # pragma: no cover
+                        logger.warning("OCR fallback after graphics warnings failed: %s", exc)
         except Exception as exc:  # pragma: no cover
             logger.debug("OCR fallback decision failed: %s", exc)
 

@@ -858,6 +858,13 @@ class MainWindow(QtWidgets.QMainWindow):
                 f"}}"
             )
 
+    def _reset_sds_progress(self) -> None:
+        """Reset SDS progress UI elements to their idle state."""
+        if hasattr(self, "sds_progress"):
+            self.sds_progress.setValue(0)
+        if hasattr(self, "sds_file_counter"):
+            self.sds_file_counter.setText("")
+
     def _style_textedit(self, textedit: QtWidgets.QTextEdit) -> None:
         """Apply consistent styling to a text edit."""
         textedit.setStyleSheet(
@@ -1145,7 +1152,14 @@ class MainWindow(QtWidgets.QMainWindow):
     def _load_sds_files(self) -> None:
         if not self._selected_sds_folder:
             return
+        # Fresh load: clear progress and any stale processing maps
+        self._reset_sds_progress()
+        self._processing_file_map = {}
+        self._processing_name_map = {}
+        self._cancel_processing = False
+
         files = self._collect_sds_files(self._selected_sds_folder)
+        self.sds_table.clearContents()
         self.sds_table.setRowCount(len(files))
         self.sds_selected_files = files.copy()
 
@@ -1154,11 +1168,13 @@ class MainWindow(QtWidgets.QMainWindow):
 
         # Get processed files for visual indicators
         processed_metadata = self.db.get_processed_files_metadata()
+        # Consider a file processed if its filename exists in metadata, regardless of size differences
+        processed_names = {name for (name, _size) in processed_metadata.keys()}
 
         for idx, file_path in enumerate(files):
             # Check if this file was already processed
-            file_key = (file_path.name, file_path.stat().st_size)
-            is_processed = file_key in processed_metadata
+            # Use filename-only check to avoid false pending due to size changes
+            is_processed = file_path.name in processed_names
             # Column 0: Checkbox in a container with gray background
             container = QtWidgets.QWidget()
             container.setStyleSheet(
@@ -1251,7 +1267,6 @@ class MainWindow(QtWidgets.QMainWindow):
                                 self._refresh_checkbox_symbols(checkbox)
         self._update_sds_file_count()
 
-
     def _on_file_selection_changed(self) -> None:
         """Handle file selection/deselection in the table."""
         self._update_sds_file_count()
@@ -1321,7 +1336,8 @@ class MainWindow(QtWidgets.QMainWindow):
                         if isinstance(checkbox, QtWidgets.QCheckBox) and checkbox.isChecked():
                             file_item = self.sds_table.item(idx, 1)
                             if file_item and self._selected_sds_folder:
-                                file_name = file_item.text()
+                                # Remove any leading status marker (e.g., "✓ ") when resolving the path
+                                file_name = file_item.text().replace("✓ ", "").strip()
                                 file_path = self._selected_sds_folder / file_name
                                 if file_path.exists():
                                     selected.append(file_path)
@@ -1715,7 +1731,7 @@ class MainWindow(QtWidgets.QMainWindow):
         try:
             models = self.ollama.list_models()
             if models:
-                status_text = f"✓ Connected"
+                status_text = "✓ Connected"
                 self._style_label(self.ollama_status_label, color=self.colors.get("success", "#a6e3a1"))
                 models_text = f"Available models: {len(models)} - {', '.join(models[:3])}"
                 if len(models) > 3:
@@ -1727,7 +1743,7 @@ class MainWindow(QtWidgets.QMainWindow):
                 self._style_label(self.ollama_status_label, color=self.colors.get("warning", "#f9e2af"))
                 self.ollama_models_label.setText("No models installed")
         except Exception as e:
-            status_text = f"✗ Not connected"
+            status_text = "✗ Not connected"
             self._style_label(self.ollama_status_label, color=self.colors.get("error", "#f38ba8"))
             self.ollama_models_label.setText(f"Connection error: {str(e)[:50]}")
             self._style_label(self.ollama_models_label, color=self.colors.get("error", "#f38ba8"))
