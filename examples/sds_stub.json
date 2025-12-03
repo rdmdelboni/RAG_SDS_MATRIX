@@ -1,0 +1,28 @@
+{
+  "product_name": "Ethanol 70%",
+  "cas_number": "64-17-5",
+  "hazard_class": "3",
+  "h_statements": ["H225", "H319"],
+  "p_statements": ["P210", "P233", "P280"],
+  "pictograms": ["GHS02", "GHS07"],
+  "supplier": "ACME Labs",
+  "emergency_phone": "+55 11 99999-0000",
+  "composition": [
+    {"name": "Ethanol", "cas": "64-17-5", "min_conc": 65.0, "max_conc": 75.0},
+    {"name": "Water", "cas": "7732-18-5", "min_conc": 25.0, "max_conc": 35.0}
+  ],
+  "use": "Laboratory solvent",
+  "first_aid": "If inhaled, move to fresh air. If on skin, wash with water.",
+  "fire_fighting": "Use alcohol-resistant foam, CO2, dry chemical.",
+  "spill_response": "Absorb with inert material, ventilate area.",
+  "handling_storage": "Keep away from heat/sparks/open flames. Store tightly closed.",
+  "exposure_controls": "Provide adequate ventilation; wear protective gloves and goggles.",
+  "physical_properties": "Clear colorless liquid; flash point 16-17°C.",
+  "stability_reactivity": "Stable under recommended storage conditions.",
+  "toxicology": "May cause eye irritation; high vapor concentrations may cause drowsiness.",
+  "ecology": "Volatile; avoid release to the environment.",
+  "disposal": "Dispose of contents/container in accordance with local regulations.",
+  "transport": "UN1170, Class 3, Packing Group II.",
+  "regulatory": "Follow CLP/GHS.",
+  "other_info": "Generated stub example"
+}

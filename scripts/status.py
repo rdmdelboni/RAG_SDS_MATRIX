@@ -34,6 +34,27 @@ def main() -> int:
     print(f"snapshots: {snapshots}")
     print(f"matrix decisions logged: {decisions}")
 
+    # Harvester
+    harvest = {}
+    try:
+        harvest = db.get_harvest_stats()
+    except Exception:
+        pass
+    if harvest:
+        print("\n== Harvester ==")
+        print(f"total downloads: {harvest.get('harvest_total', 0)}")
+        print(f"successful     : {harvest.get('harvest_success', 0)}")
+        print(f"failed         : {harvest.get('harvest_failed', 0)}")
+        print(f"last activity  : {harvest.get('harvest_last')}")
+        try:
+            breakdown = db.get_harvest_source_breakdown()
+            if breakdown:
+                print("top sources    :")
+                for src, total, success in breakdown:
+                    print(f"  - {src}: {success}/{total} ok")
+        except Exception:
+            pass
+
     # Vector store
     try:
         vs = get_vector_store()

@@ -36,13 +36,18 @@ class HeuristicExtractor:
         if profile and profile.regex_overrides and field_name in profile.regex_overrides:
             override_pattern = profile.regex_overrides[field_name]
             try:
-                match = re.search(override_pattern, text, re.IGNORECASE | re.MULTILINE)
+                compiled = (
+                    override_pattern
+                    if hasattr(override_pattern, "search")
+                    else re.compile(str(override_pattern), re.IGNORECASE | re.MULTILINE)
+                )
+                match = compiled.search(text)
                 if match:
                     val = match.group(1).strip() if match.groups() else match.group(0).strip()
                     context = text[max(0, match.start() - 50) : match.end() + 50].strip()
                     return {
                         "value": val,
-                        "confidence": 0.95, # High confidence for profile match
+                        "confidence": 0.95,  # High confidence for profile match
                         "context": context,
                         "source": f"heuristic_profile_{profile.name}",
                     }

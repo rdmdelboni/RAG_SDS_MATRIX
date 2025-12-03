@@ -10,6 +10,8 @@ from __future__ import annotations
 import subprocess
 import traceback
 import sys
+import json
+from datetime import datetime
 from pathlib import Path
 from typing import Callable, Iterable
 
@@ -24,6 +26,10 @@ from ..matrix.exporter import MatrixExporter
 from ..models import get_ollama_client
 from ..rag.ingestion_service import IngestionSummary, KnowledgeIngestionService
 from ..sds.processor import SDSProcessor
+from ..sds.heuristics import HeuristicExtractor
+from ..sds.extractor import SDSExtractor
+from ..sds.profile_router import ProfileRouter
+from ..sds.regex_catalog import get_regex_catalog
 from ..utils.logger import get_logger
 from .theme import get_colors
 
@@ -69,6 +75,7 @@ class MainWindow(QtWidgets.QMainWindow):
         super().__init__()
 
         self.settings = get_settings()
+        self.project_root = Path(__file__).resolve().parent.parent
         theme_pref = (self.settings.ui.theme or "system").lower()
         if theme_pref == "system":
             theme_pref = "dark" if self._system_prefers_dark() else "light"
@@ -76,6 +83,9 @@ class MainWindow(QtWidgets.QMainWindow):
         self.db = get_db_manager()
         self.ingestion = KnowledgeIngestionService()
         self.ollama = get_ollama_client()
+        self.profile_router = ProfileRouter()
+        self.heuristics = HeuristicExtractor()
+        self.sds_extractor = SDSExtractor()
         self.thread_pool = QtCore.QThreadPool.globalInstance()
         self._workers: list[TaskRunner] = []
         self._cancel_processing = False
@@ -169,6 +179,8 @@ class MainWindow(QtWidgets.QMainWindow):
         self.tabs.addTab(self._create_backup_tab(), "Backup")
         self.tabs.addTab(self._create_status_tab(), "Status")
         self.tabs.addTab(self._create_chat_tab(), "Chat")
+        self.tabs.addTab(self._create_automation_tab(), "Automation")
+        self.tabs.addTab(self._create_regex_lab_tab(), "Regex Lab")
 
         self.status_bar = self.statusBar()
         self.status_label = QtWidgets.QLabel(get_text("app.ready"))
@@ -1094,6 +1106,492 @@ class MainWindow(QtWidgets.QMainWindow):
         # Color NOT_FOUND entries in red
         self._colorize_not_found_in_review()
         self._set_status("Review table refreshed")
+
+    # === Regex Lab tab ===
+
+    def _create_regex_lab_tab(self) -> QtWidgets.QWidget:
+        """Lightweight UI to run heuristic/profile extraction on a single SDS."""
+        tab = QtWidgets.QWidget()
+        layout = QtWidgets.QVBoxLayout(tab)
+        layout.setSpacing(10)
+        layout.setContentsMargins(12, 12, 12, 12)
+
+        # File picker
+        file_row = QtWidgets.QHBoxLayout()
+        self.regex_file_input = QtWidgets.QLineEdit()
+        file_btn = QtWidgets.QPushButton("Browse SDS")
+        self._style_button(file_btn)
+        file_btn.clicked.connect(self._on_select_regex_file)
+        file_row.addWidget(QtWidgets.QLabel("SDS file"))
+        file_row.addWidget(self.regex_file_input)
+        file_row.addWidget(file_btn)
+        layout.addLayout(file_row)
+
+        # Profile selector + optional fields
+        ctrl_row = QtWidgets.QHBoxLayout()
+        self.profile_combo = QtWidgets.QComboBox()
+        self.profile_combo.addItem("Auto")
+        for name in self.profile_router.list_profiles():
+            self.profile_combo.addItem(name)
+        ctrl_row.addWidget(QtWidgets.QLabel("Profile"))
+        ctrl_row.addWidget(self.profile_combo)
+
+        self.fields_input = QtWidgets.QLineEdit()
+        self.fields_input.setPlaceholderText("Optional: fields comma-separated (e.g., product_name,cas_number)")
+        ctrl_row.addWidget(self.fields_input)
+
+        run_btn = QtWidgets.QPushButton("Run regex extraction")
+        self._style_button(run_btn)
+        run_btn.clicked.connect(self._on_run_regex_lab)
+        ctrl_row.addWidget(run_btn)
+        layout.addLayout(ctrl_row)
+
+        # Results table
+        self.regex_table = QtWidgets.QTableWidget()
+        self.regex_table.setColumnCount(4)
+        self.regex_table.setHorizontalHeaderLabels(["Field", "Value", "Confidence", "Source"])
+        self.regex_table.horizontalHeader().setStretchLastSection(True)
+        layout.addWidget(self.regex_table)
+
+        # Pattern editor
+        editor_group = QtWidgets.QGroupBox("Edit / Save Pattern")
+        e_layout = QtWidgets.QGridLayout(editor_group)
+        row = 0
+        self.regex_profile_edit = QtWidgets.QLineEdit()
+        self.regex_field_edit = QtWidgets.QLineEdit()
+        self.regex_pattern_edit = QtWidgets.QLineEdit()
+        self.regex_flags_edit = QtWidgets.QLineEdit("im")
+        e_layout.addWidget(QtWidgets.QLabel("Profile"), row, 0)
+        e_layout.addWidget(self.regex_profile_edit, row, 1)
+        row += 1
+        e_layout.addWidget(QtWidgets.QLabel("Field"), row, 0)
+        e_layout.addWidget(self.regex_field_edit, row, 1)
+        row += 1
+        e_layout.addWidget(QtWidgets.QLabel("Pattern"), row, 0)
+        e_layout.addWidget(self.regex_pattern_edit, row, 1)
+        row += 1
+        e_layout.addWidget(QtWidgets.QLabel("Flags (imxs)"), row, 0)
+        e_layout.addWidget(self.regex_flags_edit, row, 1)
+        row += 1
+        save_btn = QtWidgets.QPushButton("Save pattern to catalog")
+        self._style_button(save_btn)
+        save_btn.clicked.connect(self._on_save_regex_pattern)
+        reload_btn = QtWidgets.QPushButton("Reload profiles")
+        self._style_button(reload_btn)
+        reload_btn.clicked.connect(self._on_reload_profiles)
+        e_layout.addWidget(save_btn, row, 0)
+        e_layout.addWidget(reload_btn, row, 1)
+        layout.addWidget(editor_group)
+
+        self.regex_status = QtWidgets.QLabel("Ready")
+        self._style_label(self.regex_status, color=self.colors.get("subtext", "#a6adc8"))
+        layout.addWidget(self.regex_status)
+
+        layout.addStretch()
+        return tab
+
+    def _on_select_regex_file(self) -> None:
+        path, _ = QtWidgets.QFileDialog.getOpenFileName(self, "Select SDS", str(self.project_root))
+        if path:
+            self.regex_file_input.setText(path)
+
+    def _on_run_regex_lab(self) -> None:
+        file_path = self.regex_file_input.text().strip()
+        if not file_path or not Path(file_path).exists():
+            self._set_status("Select a valid SDS file for regex lab", error=True)
+            self.regex_status.setText("No file selected")
+            return
+        profile_choice = self.profile_combo.currentText()
+        fields_raw = self.fields_input.text().strip()
+        fields = [f.strip() for f in fields_raw.split(",") if f.strip()] if fields_raw else None
+
+        self._start_task(
+            self._regex_lab_task,
+            Path(file_path),
+            profile_choice,
+            fields,
+            on_result=self._on_regex_lab_done,
+        )
+        self.regex_status.setText("Running…")
+
+    def _regex_lab_task(
+        self,
+        file_path: Path,
+        profile_choice: str,
+        fields: list[str] | None,
+        *,
+        signals: WorkerSignals | None = None,
+    ) -> dict:
+        doc = self.sds_extractor.extract_document(file_path)
+        text = doc.get("text", "")
+        sections = doc.get("sections", {})
+        profile = None
+        if profile_choice and profile_choice != "Auto":
+            profile = self.profile_router.identify_profile(text, preferred=profile_choice)
+        else:
+            profile = self.profile_router.identify_profile(text)
+
+        results = self.heuristics.extract_all_fields(text, sections, profile=profile)
+        if fields:
+            results = {k: v for k, v in results.items() if k in fields}
+        if signals:
+            signals.message.emit(f"Detected profile: {profile.name}")
+        return {"profile": profile.name, "results": results}
+
+    def _on_regex_lab_done(self, result: object) -> None:
+        if not isinstance(result, dict):
+            self.regex_status.setText("No results")
+            return
+        profile = result.get("profile", "Auto")
+        results = result.get("results", {}) or {}
+        rows = []
+        for field, data in results.items():
+            rows.append(
+                {
+                    "field": field,
+                    "value": str(data.get("value", "")),
+                    "confidence": f"{data.get('confidence', 0.0):.2f}",
+                    "source": data.get("source", ""),
+                }
+            )
+        self.regex_table.setRowCount(len(rows))
+        for r, row in enumerate(rows):
+            self.regex_table.setItem(r, 0, QtWidgets.QTableWidgetItem(row["field"]))
+            self.regex_table.setItem(r, 1, QtWidgets.QTableWidgetItem(row["value"]))
+            self.regex_table.setItem(r, 2, QtWidgets.QTableWidgetItem(row["confidence"]))
+            self.regex_table.setItem(r, 3, QtWidgets.QTableWidgetItem(row["source"]))
+        self.regex_table.resizeColumnsToContents()
+        self.regex_status.setText(f"Profile: {profile} | Fields: {len(rows)}")
+        self._set_status(f"Regex lab: profile {profile}, {len(rows)} fields")
+
+    def _on_save_regex_pattern(self) -> None:
+        profile = self.regex_profile_edit.text().strip() or self.profile_combo.currentText()
+        field = self.regex_field_edit.text().strip()
+        pattern = self.regex_pattern_edit.text().strip()
+        flags = self.regex_flags_edit.text().strip() or "im"
+        if not profile or profile == "Auto" or not field or not pattern:
+            self._set_status("Profile, field, and pattern are required", error=True)
+            self.regex_status.setText("Missing required fields")
+            return
+        try:
+            catalog_path = self.project_root / "data/regex/regexes.json"
+            if not catalog_path.exists():
+                raise FileNotFoundError(f"Catalog not found at {catalog_path}")
+            with open(catalog_path, "r", encoding="utf-8") as f:
+                data = json.load(f)
+            profiles = data.get("profiles", [])
+            target = next((p for p in profiles if p.get("name", "").lower() == profile.lower()), None)
+            if not target:
+                target = {"name": profile, "identifiers": [], "regexes": {}}
+                profiles.append(target)
+            target.setdefault("regexes", {})
+            target["regexes"][field] = {"pattern": pattern, "flags": flags}
+            data["profiles"] = profiles
+            data["version"] = f"ui-edit-{datetime.utcnow().strftime('%Y%m%d%H%M%S')}"
+            with open(catalog_path, "w", encoding="utf-8") as f:
+                json.dump(data, f, indent=2)
+            self._set_status(f"Saved pattern for {profile}.{field}")
+            self.regex_status.setText(f"Saved to catalog ({catalog_path.name})")
+        except Exception as exc:
+            self._set_status(f"Failed to save pattern: {exc}", error=True)
+            self.regex_status.setText("Save failed")
+
+    def _on_reload_profiles(self) -> None:
+        try:
+            get_regex_catalog.cache_clear()
+            self.profile_router = ProfileRouter()
+            current = self.profile_combo.currentText()
+            self.profile_combo.clear()
+            self.profile_combo.addItem("Auto")
+            for name in self.profile_router.list_profiles():
+                self.profile_combo.addItem(name)
+            idx = self.profile_combo.findText(current)
+            if idx >= 0:
+                self.profile_combo.setCurrentIndex(idx)
+            self._set_status("Profiles reloaded from catalog")
+            self.regex_status.setText("Profiles reloaded")
+        except Exception as exc:
+            self._set_status(f"Failed to reload profiles: {exc}", error=True)
+
+    # === Automation tab ===
+
+    def _create_automation_tab(self) -> QtWidgets.QWidget:
+        """Automation tab: harvest, schedule, packets, SDS generation."""
+        tab = QtWidgets.QWidget()
+        layout = QtWidgets.QVBoxLayout(tab)
+        layout.setSpacing(10)
+        layout.setContentsMargins(12, 12, 12, 12)
+
+        # Harvest and process
+        harvest_group = QtWidgets.QGroupBox("Harvest & Process")
+        h_layout = QtWidgets.QGridLayout(harvest_group)
+        row = 0
+
+        self.cas_file_input = QtWidgets.QLineEdit()
+        cas_btn = QtWidgets.QPushButton("Browse CAS file")
+        self._style_button(cas_btn)
+        cas_btn.clicked.connect(self._on_select_cas_file)
+        h_layout.addWidget(QtWidgets.QLabel("CAS list file"), row, 0)
+        h_layout.addWidget(self.cas_file_input, row, 1)
+        h_layout.addWidget(cas_btn, row, 2)
+        row += 1
+
+        self.harvest_output_input = QtWidgets.QLineEdit(str(self.project_root / "data/input/harvested"))
+        out_btn = QtWidgets.QPushButton("Browse output folder")
+        self._style_button(out_btn)
+        out_btn.clicked.connect(self._on_select_harvest_output)
+        h_layout.addWidget(QtWidgets.QLabel("Output folder"), row, 0)
+        h_layout.addWidget(self.harvest_output_input, row, 1)
+        h_layout.addWidget(out_btn, row, 2)
+        row += 1
+
+        self.harvest_limit = QtWidgets.QSpinBox()
+        self.harvest_limit.setRange(1, 10)
+        self.harvest_limit.setValue(3)
+        self.process_checkbox = QtWidgets.QCheckBox("Process immediately")
+        self.process_checkbox.setChecked(True)
+        self.no_rag_checkbox = QtWidgets.QCheckBox("Disable RAG during processing")
+        h_layout.addWidget(QtWidgets.QLabel("Max downloads per CAS"), row, 0)
+        h_layout.addWidget(self.harvest_limit, row, 1)
+        row += 1
+        h_layout.addWidget(self.process_checkbox, row, 0, 1, 2)
+        row += 1
+        h_layout.addWidget(self.no_rag_checkbox, row, 0, 1, 2)
+        row += 1
+
+        harvest_btn = QtWidgets.QPushButton("Run Harvest + Process")
+        self._style_button(harvest_btn)
+        harvest_btn.clicked.connect(self._on_run_harvest_process)
+        h_layout.addWidget(harvest_btn, row, 0, 1, 3)
+
+        layout.addWidget(harvest_group)
+
+        # Scheduler
+        sched_group = QtWidgets.QGroupBox("Scheduled Harvest")
+        s_layout = QtWidgets.QGridLayout(sched_group)
+        self.interval_spin = QtWidgets.QSpinBox()
+        self.interval_spin.setRange(5, 24 * 60)
+        self.interval_spin.setValue(60)
+        self.iterations_spin = QtWidgets.QSpinBox()
+        self.iterations_spin.setRange(0, 1000)
+        self.iterations_spin.setValue(0)
+        s_layout.addWidget(QtWidgets.QLabel("Interval (minutes)"), 0, 0)
+        s_layout.addWidget(self.interval_spin, 0, 1)
+        s_layout.addWidget(QtWidgets.QLabel("Iterations (0 = infinite)"), 1, 0)
+        s_layout.addWidget(self.iterations_spin, 1, 1)
+        sched_btn = QtWidgets.QPushButton("Start Scheduler (background)")
+        self._style_button(sched_btn)
+        sched_btn.clicked.connect(self._on_run_scheduler)
+        s_layout.addWidget(sched_btn, 2, 0, 1, 2)
+        layout.addWidget(sched_group)
+
+        # Experiment packet
+        packet_group = QtWidgets.QGroupBox("Experiment Packet")
+        p_layout = QtWidgets.QGridLayout(packet_group)
+        row = 0
+        self.packet_matrix_input = QtWidgets.QLineEdit()
+        m_btn = QtWidgets.QPushButton("Browse matrix export")
+        self._style_button(m_btn)
+        m_btn.clicked.connect(self._on_select_packet_matrix)
+        p_layout.addWidget(QtWidgets.QLabel("Matrix file"), row, 0)
+        p_layout.addWidget(self.packet_matrix_input, row, 1)
+        p_layout.addWidget(m_btn, row, 2)
+        row += 1
+        self.packet_sds_dir_input = QtWidgets.QLineEdit(str(self.project_root / "data/input/harvested"))
+        sd_btn = QtWidgets.QPushButton("Browse SDS folder")
+        self._style_button(sd_btn)
+        sd_btn.clicked.connect(self._on_select_packet_sds_dir)
+        p_layout.addWidget(QtWidgets.QLabel("SDS folder"), row, 0)
+        p_layout.addWidget(self.packet_sds_dir_input, row, 1)
+        p_layout.addWidget(sd_btn, row, 2)
+        row += 1
+        self.packet_cas_input = QtWidgets.QLineEdit()
+        self.packet_cas_input.setPlaceholderText("Comma-separated CAS numbers")
+        p_layout.addWidget(QtWidgets.QLabel("CAS list"), row, 0)
+        p_layout.addWidget(self.packet_cas_input, row, 1, 1, 2)
+        row += 1
+        packet_btn = QtWidgets.QPushButton("Create Packet")
+        self._style_button(packet_btn)
+        packet_btn.clicked.connect(self._on_export_packet)
+        p_layout.addWidget(packet_btn, row, 0, 1, 3)
+        layout.addWidget(packet_group)
+
+        # SDS generation stub
+        gen_group = QtWidgets.QGroupBox("SDS Generator (stub)")
+        g_layout = QtWidgets.QGridLayout(gen_group)
+        row = 0
+        self.gen_data_input = QtWidgets.QLineEdit(str(self.project_root / "examples/sds_stub.json"))
+        data_btn = QtWidgets.QPushButton("Browse JSON")
+        self._style_button(data_btn)
+        data_btn.clicked.connect(self._on_select_gen_data)
+        g_layout.addWidget(QtWidgets.QLabel("Data JSON"), row, 0)
+        g_layout.addWidget(self.gen_data_input, row, 1)
+        g_layout.addWidget(data_btn, row, 2)
+        row += 1
+        self.gen_out_input = QtWidgets.QLineEdit(str(self.project_root / "output/sds_stub.pdf"))
+        out_btn2 = QtWidgets.QPushButton("Browse output PDF")
+        self._style_button(out_btn2)
+        out_btn2.clicked.connect(self._on_select_gen_output)
+        g_layout.addWidget(QtWidgets.QLabel("Output PDF"), row, 0)
+        g_layout.addWidget(self.gen_out_input, row, 1)
+        g_layout.addWidget(out_btn2, row, 2)
+        row += 1
+        gen_btn = QtWidgets.QPushButton("Generate SDS PDF")
+        self._style_button(gen_btn)
+        gen_btn.clicked.connect(self._on_generate_sds_pdf)
+        g_layout.addWidget(gen_btn, row, 0, 1, 3)
+        layout.addWidget(gen_group)
+
+        self.automation_status = QtWidgets.QLabel("Ready")
+        self._style_label(self.automation_status, color=self.colors.get("subtext", "#a6adc8"))
+        layout.addWidget(self.automation_status)
+
+        layout.addStretch()
+        return tab
+
+    # === Automation actions ===
+
+    def _on_select_cas_file(self) -> None:
+        path, _ = QtWidgets.QFileDialog.getOpenFileName(self, "Select CAS list", str(self.project_root))
+        if path:
+            self.cas_file_input.setText(path)
+
+    def _on_select_harvest_output(self) -> None:
+        path = QtWidgets.QFileDialog.getExistingDirectory(self, "Select output folder", str(self.project_root))
+        if path:
+            self.harvest_output_input.setText(path)
+
+    def _on_select_packet_matrix(self) -> None:
+        path, _ = QtWidgets.QFileDialog.getOpenFileName(self, "Select matrix file", str(self.project_root))
+        if path:
+            self.packet_matrix_input.setText(path)
+
+    def _on_select_packet_sds_dir(self) -> None:
+        path = QtWidgets.QFileDialog.getExistingDirectory(self, "Select SDS folder", str(self.project_root))
+        if path:
+            self.packet_sds_dir_input.setText(path)
+
+    def _on_select_gen_data(self) -> None:
+        path, _ = QtWidgets.QFileDialog.getOpenFileName(self, "Select JSON data", str(self.project_root))
+        if path:
+            self.gen_data_input.setText(path)
+
+    def _on_select_gen_output(self) -> None:
+        path, _ = QtWidgets.QFileDialog.getSaveFileName(self, "Select output PDF", str(self.project_root / "output/sds_stub.pdf"))
+        if path:
+            self.gen_out_input.setText(path)
+
+    def _on_run_harvest_process(self) -> None:
+        cas_file = self.cas_file_input.text().strip()
+        output_dir = self.harvest_output_input.text().strip()
+        if not cas_file or not Path(cas_file).exists():
+            self._set_status("Select a valid CAS list file", error=True)
+            return
+        cmd = [
+            sys.executable,
+            str(self.project_root / "scripts/harvest_and_process.py"),
+            "--cas-file",
+            cas_file,
+            "--output",
+            output_dir,
+            "--limit",
+            str(self.harvest_limit.value()),
+        ]
+        if self.process_checkbox.isChecked():
+            cmd.append("--process")
+        if self.no_rag_checkbox.isChecked():
+            cmd.append("--no-rag")
+        self._run_async_command(cmd, "Harvest + process completed")
+
+    def _on_run_scheduler(self) -> None:
+        cas_file = self.cas_file_input.text().strip()
+        output_dir = self.harvest_output_input.text().strip()
+        if not cas_file or not Path(cas_file).exists():
+            self._set_status("Select a valid CAS list file", error=True)
+            return
+        cmd = [
+            sys.executable,
+            str(self.project_root / "scripts/harvest_scheduler.py"),
+            "--cas-file",
+            cas_file,
+            "--output",
+            output_dir,
+            "--interval",
+            str(self.interval_spin.value()),
+            "--limit",
+            str(self.harvest_limit.value()),
+            "--iterations",
+            str(self.iterations_spin.value()),
+        ]
+        if self.process_checkbox.isChecked():
+            cmd.append("--process")
+        if self.no_rag_checkbox.isChecked():
+            cmd.append("--no-rag")
+        try:
+            subprocess.Popen(cmd, cwd=str(self.project_root))
+            self._set_status("Scheduler started in background")
+        except Exception as exc:
+            self._set_status(f"Failed to start scheduler: {exc}", error=True)
+
+    def _on_export_packet(self) -> None:
+        matrix = self.packet_matrix_input.text().strip()
+        sds_dir = self.packet_sds_dir_input.text().strip()
+        cas_raw = self.packet_cas_input.text().strip()
+        if not matrix or not Path(matrix).exists():
+            self._set_status("Select a valid matrix file", error=True)
+            return
+        if not sds_dir or not Path(sds_dir).exists():
+            self._set_status("Select a valid SDS folder", error=True)
+            return
+        cas_list = [c.strip() for c in cas_raw.split(",") if c.strip()]
+        if not cas_list:
+            self._set_status("Enter at least one CAS number", error=True)
+            return
+        cmd = [
+            sys.executable,
+            str(self.project_root / "scripts/export_experiment_packet.py"),
+            "--matrix",
+            matrix,
+            "--sds-dir",
+            sds_dir,
+            "--out",
+            str(self.project_root / "packets"),
+        ]
+        cmd.extend(["--cas", *cas_list])
+        self._run_async_command(cmd, "Experiment packet created")
+
+    def _on_generate_sds_pdf(self) -> None:
+        data_file = self.gen_data_input.text().strip()
+        out_file = self.gen_out_input.text().strip()
+        if not data_file or not Path(data_file).exists():
+            self._set_status("Select a valid JSON data file", error=True)
+            return
+        cmd = [
+            sys.executable,
+            str(self.project_root / "scripts/generate_sds_stub.py"),
+            "--data",
+            data_file,
+            "--out",
+            out_file,
+        ]
+        self._run_async_command(cmd, "SDS PDF generated")
+
+    def _run_async_command(self, cmd: list[str], success_message: str) -> None:
+        """Run a CLI command off the UI thread."""
+
+        def task(*, signals: WorkerSignals):
+            proc = subprocess.run(cmd, capture_output=True, text=True, cwd=str(self.project_root))
+            if proc.returncode != 0:
+                raise RuntimeError(proc.stderr.strip() or proc.stdout.strip() or "Command failed")
+            signals.message.emit(proc.stdout.strip())
+            return success_message
+
+        worker = TaskRunner(task)
+        worker.signals.finished.connect(lambda _: self._set_status(success_message))
+        worker.signals.error.connect(lambda e: self._set_status(f"Error: {e}", error=True))
+        worker.signals.message.connect(lambda m: self._set_status(m))
+        self._workers.append(worker)
+        self.thread_pool.start(worker)
 
     def _populate_table(self, table: QtWidgets.QTableWidget, rows: list[dict], *, columns: list[tuple[str, str]]) -> None:
         table.setColumnCount(len(columns))

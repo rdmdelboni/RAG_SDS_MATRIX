@@ -5,7 +5,7 @@ Calculates expected hazards based on mixture composition and GHS rules.
 from typing import List, Dict, Any, Optional
 import re
 from dataclasses import dataclass
-from .utils.logger import get_logger
+from ..utils.logger import get_logger
 
 logger = get_logger(__name__)
 

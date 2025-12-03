@@ -12,7 +12,9 @@ from typing import List
 sys.path.append(str(Path(__file__).parent.parent))
 
 from src.harvester.core import SDSHarvester
+from src.harvester.inventory_sync import InventorySync
 from src.utils.logger import get_logger
+from src.database import get_db_manager
 
 logger = get_logger("fetch_sds")
 
@@ -29,8 +31,14 @@ def main():
 
     output_dir = Path(args.output)
     harvester = SDSHarvester()
+    db = get_db_manager()
+    sync = InventorySync()
     
     print(f"Initialized Harvester with {len(harvester.providers)} providers.")
+    if sync.enabled:
+        print(f"Inventory sync enabled (mode={sync.mode})")
+    elif os.getenv("OE_SYNC_ENABLED", "").lower() in ("true", "1", "yes"):
+        print("Inventory sync was requested but not enabled (check OE_SYNC_* settings and mysql-connector install).")
     
     for cas in args.cas_numbers:
         print(f"Searching for CAS: {cas}...")
@@ -50,8 +58,25 @@ def main():
             file_path = harvester.download_sds(res, output_dir)
             if file_path:
                 print(f"  ✅ Downloaded to {file_path}")
+                db.record_harvest_download(
+                    cas_number=cas,
+                    source=res.source,
+                    url=res.url,
+                    saved_path=file_path,
+                    status="downloaded",
+                )
+                sync.sync_download(cas, file_path)
             else:
                 print(f"  ❌ Failed to download {res.url}")
+                db.record_harvest_download(
+                    cas_number=cas,
+                    source=res.source,
+                    url=res.url,
+                    saved_path=None,
+                    status="failed",
+                    error_message="download failed",
+                )
+                sync.mark_missing(cas)
 
 if __name__ == "__main__":
     main()

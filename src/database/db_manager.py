@@ -138,6 +138,7 @@ class DatabaseManager:
             self.conn.execute(
                 "CREATE SEQUENCE IF NOT EXISTS rag_documents_seq START 1;"
             )
+            self.conn.execute("CREATE SEQUENCE IF NOT EXISTS harvest_seq START 1;")
 
             # Documents table
             self.conn.execute(
@@ -341,6 +342,26 @@ class DatabaseManager:
                 ON extractions(
                     CAST(json_extract(metadata, '$.quality_tier') AS VARCHAR)
                 ) WHERE metadata IS NOT NULL;
+                """
+            )
+
+            # Harvester downloads provenance
+            self.conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS harvester_downloads (
+                    id BIGINT PRIMARY KEY DEFAULT nextval('harvest_seq'),
+                    cas_number VARCHAR,
+                    source VARCHAR,
+                    url VARCHAR,
+                    saved_path VARCHAR,
+                    filename VARCHAR,
+                    status VARCHAR,
+                    http_status INTEGER,
+                    error_message TEXT,
+                    content_hash VARCHAR,
+                    file_size_bytes BIGINT,
+                    downloaded_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                );
                 """
             )
             
@@ -1060,8 +1081,37 @@ class DatabaseManager:
 
     # === Statistics ===
 
+    def _ensure_harvest_table(self) -> None:
+        """Create harvester_downloads if missing (backward compat)."""
+        with self._lock:
+            exists = self.conn.execute(
+                "SELECT COUNT(*) FROM information_schema.tables WHERE table_name = 'harvester_downloads'"
+            ).fetchone()[0]
+            if exists:
+                return
+            self.conn.execute(
+                """
+                CREATE SEQUENCE IF NOT EXISTS harvest_seq START 1;
+                CREATE TABLE IF NOT EXISTS harvester_downloads (
+                    id BIGINT PRIMARY KEY DEFAULT nextval('harvest_seq'),
+                    cas_number VARCHAR,
+                    source VARCHAR,
+                    url VARCHAR,
+                    saved_path VARCHAR,
+                    filename VARCHAR,
+                    status VARCHAR,
+                    http_status INTEGER,
+                    error_message TEXT,
+                    content_hash VARCHAR,
+                    file_size_bytes BIGINT,
+                    downloaded_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                );
+                """
+            )
+
     def get_statistics(self) -> dict[str, Any]:
         """Get database statistics."""
+        self._ensure_harvest_table()
         with self._lock:
             doc_count = self.conn.execute("SELECT COUNT(*) FROM documents").fetchone()[
                 0
@@ -1084,6 +1134,15 @@ class DatabaseManager:
             rag_last_updated = self.conn.execute(
                 "SELECT MAX(indexed_at) FROM rag_documents"
             ).fetchone()[0]
+            harvest_total = self.conn.execute(
+                "SELECT COUNT(*) FROM harvester_downloads"
+            ).fetchone()[0]
+            harvest_success = self.conn.execute(
+                "SELECT COUNT(*) FROM harvester_downloads WHERE status = 'downloaded'"
+            ).fetchone()[0]
+            harvest_failed = self.conn.execute(
+                "SELECT COUNT(*) FROM harvester_downloads WHERE status = 'failed'"
+            ).fetchone()[0]
 
             return {
                 "total_documents": doc_count,
@@ -1098,7 +1157,99 @@ class DatabaseManager:
                 "rag_last_updated": (
                     rag_last_updated.isoformat() if rag_last_updated else None
                 ),
+                "harvest_total": harvest_total,
+                "harvest_success": harvest_success,
+                "harvest_failed": harvest_failed,
             }
+
+    # === Harvester provenance ===
+
+    def record_harvest_download(
+        self,
+        cas_number: str,
+        source: str,
+        url: str,
+        saved_path: Path | None,
+        status: str,
+        http_status: int | None = None,
+        error_message: str | None = None,
+    ) -> None:
+        """Store a harvester download attempt with provenance."""
+        self._ensure_harvest_table()
+        content_hash = None
+        file_size = None
+        filename = None
+
+        if saved_path and Path(saved_path).exists():
+            filename = Path(saved_path).name
+            data = Path(saved_path).read_bytes()
+            file_size = len(data)
+            content_hash = hashlib.sha256(data).hexdigest()
+        elif saved_path:
+            filename = Path(saved_path).name
+
+        with self._lock:
+            self.conn.execute(
+                """
+                INSERT INTO harvester_downloads
+                    (cas_number, source, url, saved_path, filename, status, http_status,
+                     error_message, content_hash, file_size_bytes, downloaded_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, now());
+                """,
+                [
+                    cas_number,
+                    source,
+                    url,
+                    str(saved_path) if saved_path else None,
+                    filename,
+                    status,
+                    http_status,
+                    error_message,
+                    content_hash,
+                    file_size,
+                ],
+            )
+
+    def get_harvest_stats(self) -> dict[str, Any]:
+        """Return simple harvest statistics."""
+        self._ensure_harvest_table()
+        with self._lock:
+            total = self.conn.execute(
+                "SELECT COUNT(*) FROM harvester_downloads"
+            ).fetchone()[0]
+            success = self.conn.execute(
+                "SELECT COUNT(*) FROM harvester_downloads WHERE status = 'downloaded'"
+            ).fetchone()[0]
+            failed = self.conn.execute(
+                "SELECT COUNT(*) FROM harvester_downloads WHERE status = 'failed'"
+            ).fetchone()[0]
+            last = self.conn.execute(
+                "SELECT MAX(downloaded_at) FROM harvester_downloads"
+            ).fetchone()[0]
+        return {
+            "harvest_total": total,
+            "harvest_success": success,
+            "harvest_failed": failed,
+            "harvest_last": last.isoformat() if last else None,
+        }
+
+    def get_harvest_source_breakdown(self, limit: int = 10) -> list[tuple[str, int, int]]:
+        """Return per-source success/total counts."""
+        self._ensure_harvest_table()
+        with self._lock:
+            rows = self.conn.execute(
+                """
+                SELECT source,
+                       COUNT(*) as total,
+                       SUM(CASE WHEN status = 'downloaded' THEN 1 ELSE 0 END) as success
+                FROM harvester_downloads
+                GROUP BY source
+                ORDER BY total DESC
+                LIMIT ?;
+                """,
+                [limit],
+            ).fetchall()
+        return [(r[0], r[1], r[2]) for r in rows]
 
 
 @lru_cache(maxsize=1)

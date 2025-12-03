@@ -16,6 +16,7 @@ A RAG-enhanced Safety Data Sheet (SDS) processor that extracts chemical safety i
 - **Knowledge Base Management**: Build and query a vector database of chemical safety documentation
 - **Decision Auditing**: Full traceability of compatibility decisions with justifications
 - **Multi-format Export**: CSV, Excel, and JSON export with separate dangerous chemicals reports
+- **Regex Lab for Vendors**: Catalog-driven manufacturer regexes with a CLI tester to cut LLM usage on known layouts
 
 ## Architecture
 
@@ -108,6 +109,33 @@ The application will automatically create required directories on first run:
 ```bash
 python main.py
 ```
+
+### Vendor Regex Lab (fewer LLM calls on known layouts)
+
+Test regex profiles against a sample SDS and tune patterns before running the full pipeline:
+
+```bash
+python scripts/regex_lab.py --list-profiles
+python scripts/regex_lab.py --file path/to/sds.pdf --profile "Sigma-Aldrich"
+```
+
+### Harvester provenance and sync
+- Fetch SDS by CAS with multi-provider scraping and DB logging:
+  `./scripts/fetch_sds.py 67-64-1 --output data/input/harvested`
+- Enable inventory sync (copy): `OE_SYNC_ENABLED=true OE_SYNC_EXPORT_DIR=/tmp/stage ./scripts/fetch_sds.py ...`
+- Enable inventory sync (MySQL Open Enventory style):
+  `OE_SYNC_ENABLED=true OE_SYNC_MODE=mysql OE_SYNC_DB_HOST=... OE_SYNC_DB_USER=... OE_SYNC_DB_PASSWORD=... OE_SYNC_DB_NAME=... ./scripts/fetch_sds.py ...`
+
+### SDS generation (stub)
+- Generate a simple CLP-style SDS PDF from structured JSON:
+  `./scripts/generate_sds_stub.py --data examples/sds_stub.json --out output/sds_stub.pdf`
+- Bundle matrix + SDS PDFs for lab packets:
+  `./scripts/export_experiment_packet.py --matrix data/output/matrix.csv --sds-dir data/input/harvested --cas 67-64-1 64-17-5 --out packets`
+
+### Automation & scheduling
+- Harvest + process in one step: `./scripts/harvest_and_process.py --cas-file cas_list.txt --process`
+- Scheduled harvesting: `./scripts/harvest_scheduler.py --cas-file cas_list.txt --interval 60 --process`
+- Packaging for labs (PyInstaller): see `packaging/packaging.md`
 
 ### Basic Workflow
 

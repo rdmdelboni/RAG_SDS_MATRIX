@@ -15,10 +15,18 @@ class SDSHarvester:
             from .providers.fisher import FisherScientificProvider
             from .providers.chemicalbook import ChemicalBookProvider
             from .providers.chemicalsafety import ChemicalSafetyProvider
+            from .providers.chemblink import ChemBlinkProvider
+            from .providers.vwr import VWRProvider
+            from .providers.tci import TCIProvider
+            from .providers.fluorochem import FluorochemProvider
             
             self.providers.append(FisherScientificProvider())
             self.providers.append(ChemicalBookProvider())
             self.providers.append(ChemicalSafetyProvider())
+            self.providers.append(ChemBlinkProvider())
+            self.providers.append(VWRProvider())
+            self.providers.append(TCIProvider())
+            self.providers.append(FluorochemProvider())
     
     def find_sds(self, cas_number: str) -> List[SDSMetadata]:
         """
@@ -42,7 +50,7 @@ class SDSHarvester:
         
         return results
 
-    def download_sds(self, metadata: SDSMetadata, output_dir: Path) -> Optional[Path]:
+    def download_sds(self, metadata: SDSMetadata, output_dir: Path, retries: int = 2) -> Optional[Path]:
         """
         Download the SDS described by metadata.
         Returns the path to the downloaded file if successful, else None.
@@ -78,6 +86,11 @@ class SDSHarvester:
                  logger.error(f"No provider found for source {metadata.source}")
                  return None
 
-        if provider.download(metadata.url, destination):
-            return destination
+        attempt = 0
+        while attempt <= retries:
+            if provider.download(metadata.url, destination):
+                return destination
+            attempt += 1
+            logger.debug("Retrying download (%d/%d) for %s", attempt, retries, metadata.url)
+
         return None
