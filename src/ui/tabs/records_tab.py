@@ -125,7 +125,10 @@ class RecordsTab(BaseTab):
                 table.setItem(row_idx, col_idx, item)
 
     def _colorize_status_column(self, table: QtWidgets.QTableWidget) -> None:
-        """Color status cells based on status value (SUCCESS, FAILED, NOT_FOUND)."""
+        """Color status cells based on status value (SUCCESS, FAILED, NOT_FOUND).
+
+        Handles various status formats with case-insensitivity and whitespace normalization.
+        """
         success_color = QtGui.QColor(self.colors.get("success", "#a6e3a1"))  # Catppuccin Mocha green
         error_color = QtGui.QColor(self.colors.get("error", "#f38ba8"))  # Catppuccin Mocha red
 
@@ -133,8 +136,16 @@ class RecordsTab(BaseTab):
             # Status is in column 1
             item = table.item(row, 1)
             if item:
-                status = item.text().upper()
-                if "SUCCESS" in status:
+                status_text = item.text().strip().upper()  # Normalize: strip whitespace and uppercase
+
+                # Check for success statuses
+                if status_text in ("SUCCESS", "✓ SUCCESS", "OK", "PROCESSED"):
                     item.setForeground(success_color)
-                elif "FAILED" in status or "NOT_FOUND" in status:
+                # Check for error/failed statuses
+                elif status_text in ("FAILED", "NOT_FOUND", "ERROR", "✗ FAILED", "✗ NOT_FOUND"):
+                    item.setForeground(error_color)
+                # Fallback: check for keywords if exact match didn't work
+                elif "SUCCESS" in status_text or "OK" in status_text or "PROCESSED" in status_text:
+                    item.setForeground(success_color)
+                elif "FAILED" in status_text or "NOT_FOUND" in status_text or "ERROR" in status_text:
                     item.setForeground(error_color)

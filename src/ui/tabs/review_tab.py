@@ -197,6 +197,8 @@ class ReviewTab(BaseTab):
         Uses Catppuccin Mocha colors:
         - Green (#a6e3a1) for SUCCESS
         - Red (#f38ba8) for FAILED and NOT_FOUND
+
+        Handles various status formats with case-insensitivity and whitespace normalization.
         """
         success_color = QtGui.QColor(self.colors.get("success", "#a6e3a1"))  # Catppuccin Mocha green
         error_color = QtGui.QColor(self.colors.get("error", "#f38ba8"))  # Catppuccin Mocha red
@@ -205,10 +207,18 @@ class ReviewTab(BaseTab):
             # Status is in column 1
             item = self.review_table.item(row, 1)
             if item:
-                status = item.text().upper()
-                if "SUCCESS" in status:
+                status_text = item.text().strip().upper()  # Normalize: strip whitespace and uppercase
+
+                # Check for success statuses
+                if status_text in ("SUCCESS", "✓ SUCCESS", "OK", "PROCESSED"):
                     item.setForeground(success_color)
-                elif "FAILED" in status or "NOT_FOUND" in status:
+                # Check for error/failed statuses
+                elif status_text in ("FAILED", "NOT_FOUND", "ERROR", "✗ FAILED", "✗ NOT_FOUND"):
+                    item.setForeground(error_color)
+                # Fallback: check for keywords if exact match didn't work
+                elif "SUCCESS" in status_text or "OK" in status_text or "PROCESSED" in status_text:
+                    item.setForeground(success_color)
+                elif "FAILED" in status_text or "NOT_FOUND" in status_text or "ERROR" in status_text:
                     item.setForeground(error_color)
 
     def _on_cell_changed(self, item: QtWidgets.QTableWidgetItem) -> None:
