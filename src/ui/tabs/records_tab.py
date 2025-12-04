@@ -125,7 +125,10 @@ class RecordsTab(BaseTab):
                 table.setItem(row_idx, col_idx, item)
 
     def _colorize_status_column(self, table: QtWidgets.QTableWidget) -> None:
-        """Color status cells based on status value (SUCCESS, FAILED, NOT_FOUND).
+        """Color cells based on status values and missing data across ALL columns.
+
+        Status column (col 1): Color SUCCESS green, FAILED/NOT_FOUND red
+        All columns: Color "None" values (missing data) red
 
         Handles various status formats with case-insensitivity and whitespace normalization.
         """
@@ -133,19 +136,27 @@ class RecordsTab(BaseTab):
         error_color = QtGui.QColor(self.colors.get("error", "#f38ba8"))  # Catppuccin Mocha red
 
         for row in range(table.rowCount()):
-            # Status is in column 1
-            item = table.item(row, 1)
-            if item:
-                status_text = item.text().strip().upper()  # Normalize: strip whitespace and uppercase
+            # First, color the Status column (column 1) based on status values
+            status_item = table.item(row, 1)
+            if status_item:
+                status_text = status_item.text().strip().upper()  # Normalize: strip whitespace and uppercase
 
                 # Check for success statuses
                 if status_text in ("SUCCESS", "✓ SUCCESS", "OK", "PROCESSED"):
-                    item.setForeground(success_color)
+                    status_item.setForeground(success_color)
                 # Check for error/failed statuses
                 elif status_text in ("FAILED", "NOT_FOUND", "ERROR", "✗ FAILED", "✗ NOT_FOUND"):
-                    item.setForeground(error_color)
+                    status_item.setForeground(error_color)
                 # Fallback: check for keywords if exact match didn't work
                 elif "SUCCESS" in status_text or "OK" in status_text or "PROCESSED" in status_text:
-                    item.setForeground(success_color)
+                    status_item.setForeground(success_color)
                 elif "FAILED" in status_text or "NOT_FOUND" in status_text or "ERROR" in status_text:
-                    item.setForeground(error_color)
+                    status_item.setForeground(error_color)
+
+            # Second, color all cells that contain "None" (missing data) in red
+            for col in range(table.columnCount()):
+                item = table.item(row, col)
+                if item:
+                    cell_text = item.text().strip().upper()
+                    if cell_text == "NONE" or cell_text == "":  # Color missing data in red
+                        item.setForeground(error_color)
