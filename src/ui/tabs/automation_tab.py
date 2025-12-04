@@ -273,6 +273,11 @@ class AutomationTab(BaseTab):
     ) -> dict:
         """Execute harvest and process in background."""
         try:
+            # Immediate feedback that task started
+            if signals:
+                signals.progress.emit(0, "Initializing harvest process…")
+                signals.message.emit("Initializing harvest process…")
+            
             from ...harvester.core import SDSHarvester
             from ...harvester.inventory_sync import InventorySync
             from ...sds.processor import SDSProcessor
@@ -290,37 +295,70 @@ class AutomationTab(BaseTab):
                     signals.error.emit("No valid CAS numbers in file")
                 return {"success": False, "error": "No valid CAS numbers", "downloaded": 0, "processed": 0}
 
+            if signals:
+                signals.progress.emit(1, f"Found {len(cas_numbers)} CAS numbers to process")
+                signals.message.emit(f"Found {len(cas_numbers)} CAS numbers to process")
+
             downloaded = []
             processed = 0
             total = len(cas_numbers)
 
             for idx, cas in enumerate(cas_numbers, 1):
+                # Clean CAS number (remove any trailing comments)
+                cas = cas.split('#')[0].strip()
+                if not cas:
+                    continue
+                
+                # Progress before searching
+                base_progress = int(100 * (idx - 1) / total)
                 if signals:
-                    msg = f"Searching CAS {cas} ({idx}/{total})…"
-                    signals.progress.emit(int(50 * idx / total), msg)
+                    msg = f"Searching providers for CAS {cas} ({idx}/{total})…"
+                    signals.progress.emit(base_progress, msg)
                     signals.message.emit(msg)
 
+                # Search across providers (this takes 30-60 seconds)
                 results = harvester.find_sds(cas)
+                
+                # Progress after search completes
+                search_progress = base_progress + int(30 / total)
+                if signals:
+                    if results:
+                        msg = f"Found {len(results)} SDS for {cas}, downloading (limit {limit})…"
+                    else:
+                        msg = f"No SDS found for {cas}, moving to next…"
+                    signals.progress.emit(search_progress, msg)
+                    signals.message.emit(msg)
+                
                 if not results:
                     continue
 
-                for res in results[:limit]:
+                for download_idx, res in enumerate(results[:limit], 1):
+                    if signals:
+                        msg = f"Downloading {download_idx}/{min(len(results), limit)} from {res.source} for {cas}…"
+                        signals.progress.emit(search_progress + int(20 / total), msg)
+                        signals.message.emit(msg)
+                    
                     file_path = harvester.download_sds(res, output_dir)
                     if file_path:
                         downloaded.append(file_path)
                         sync.sync_download(cas, file_path, source=res.source, url=res.url)
 
                         if processor:
+                            if signals:
+                                msg = f"Processing {file_path.name}…"
+                                signals.message.emit(msg)
                             try:
                                 res_proc = processor.process(file_path, use_rag=use_rag)
                                 processed += 1
                                 if signals:
-                                    signals.message.emit(f"Processed {file_path.name} (completeness: {res_proc.completeness:.2f})")
+                                    signals.message.emit(f"✓ Processed {file_path.name} (completeness: {res_proc.completeness:.2f})")
                             except Exception as exc:
                                 if signals:
-                                    signals.message.emit(f"Processing failed for {file_path.name}: {exc}")
+                                    signals.message.emit(f"✗ Processing failed for {file_path.name}: {exc}")
                     else:
                         sync.mark_missing(cas, source=res.source, url=res.url, error_message="download failed")
+                        if signals:
+                            signals.message.emit(f"✗ Download failed from {res.source}")
 
             if signals:
                 signals.progress.emit(100, f"Complete: {len(downloaded)} downloaded, {processed} processed")
