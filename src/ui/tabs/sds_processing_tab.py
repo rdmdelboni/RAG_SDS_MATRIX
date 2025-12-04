@@ -538,7 +538,6 @@ class SDSProcessingTab(BaseTab):
             use_rag,
             force_reprocess,
             on_progress=self._on_batch_progress,
-            on_data=self._on_file_processed,
             on_result=self._on_batch_done,
         )
 
