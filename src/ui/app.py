@@ -42,6 +42,7 @@ from .tabs.regex_lab_tab import RegexLabTab
 from .tabs.automation_tab import AutomationTab
 from .tabs.rag_tab import RAGTab
 from .tabs.sds_tab import SDSTab
+from .tabs.sds_processing_tab import SDSProcessingTab
 
 logger = get_logger(__name__)
 
@@ -197,6 +198,7 @@ class MainWindow(QtWidgets.QMainWindow):
         # Instantiate all tabs with TabContext
         self.rag_tab = RAGTab(tab_context)
         self.sds_tab = SDSTab(tab_context)
+        self.sds_processing_tab = SDSProcessingTab(tab_context)  # New unified tab
         self.records_tab = RecordsTab(tab_context)
         self.review_tab = ReviewTab(tab_context)
         self.backup_tab = BackupTab(tab_context)
@@ -207,14 +209,15 @@ class MainWindow(QtWidgets.QMainWindow):
 
         # Add tabs to tab widget
         self.tabs.addTab(self.rag_tab, "RAG")
-        self.tabs.addTab(self.sds_tab, "SDS")
+        self.tabs.addTab(self.sds_processing_tab, "🔬 SDS Processing")  # New unified tab
+        self.tabs.addTab(self.sds_tab, "SDS (Legacy)")
         self.tabs.addTab(self.records_tab, "Records")
         self.tabs.addTab(self.review_tab, "Review")
         self.tabs.addTab(self.backup_tab, "Backup")
         self.tabs.addTab(self.status_tab, "Status")
         self.tabs.addTab(self.chat_tab, "Chat")
         self.tabs.addTab(self.automation_tab, "Automation")
-        self.tabs.addTab(self.regex_lab_tab, "Regex Lab")
+        self.tabs.addTab(self.regex_lab_tab, "Regex Lab (Legacy)")
 
         self.status_bar = self.statusBar()
         self.status_label = QtWidgets.QLabel(get_text("app.ready"))
