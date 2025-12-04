@@ -21,6 +21,7 @@ class RAGTab(BaseTab):
 
     def __init__(self, context: TabContext) -> None:
         super().__init__(context)
+        self._task_cancelled = False
         self._build_ui()
 
     def _build_ui(self) -> None:
@@ -50,6 +51,20 @@ class RAGTab(BaseTab):
         self._style_button(refresh_btn)
         refresh_btn.clicked.connect(self._refresh_sources_table)
         btn_row.addWidget(refresh_btn)
+
+        self.rag_cancel_btn = QtWidgets.QPushButton("⏹ Cancel")
+        self.rag_cancel_btn.setStyleSheet(
+            f"QPushButton {{"
+            f"background-color: {self.colors.get('error', '#f38ba8')};"
+            f"border: none; border-radius: 4px;"
+            f"color: {self.colors['bg']}; padding: 6px 12px; font-weight: 500;"
+            f"}}"
+            f"QPushButton:hover {{ background-color: {self.colors.get('error', '#f38ba8')}; opacity: 0.9; }}"
+            f"QPushButton:disabled {{ opacity: 0.5; }}"
+        )
+        self.rag_cancel_btn.setEnabled(False)
+        self.rag_cancel_btn.clicked.connect(self._on_cancel_ingest)
+        btn_row.addWidget(self.rag_cancel_btn)
 
         btn_row.addStretch()
         layout.addLayout(btn_row)
@@ -130,6 +145,8 @@ class RAGTab(BaseTab):
             self._set_status(f"Ingesting {len(files)} files…")
             self.rag_progress.setVisible(True)
             self.rag_progress.setValue(0)
+            self.rag_cancel_btn.setEnabled(True)
+            self._task_cancelled = False
             self._start_task(
                 self._ingest_files_task,
                 [Path(f) for f in files],
@@ -152,6 +169,8 @@ class RAGTab(BaseTab):
         self._set_status(f"Ingesting {len(files)} files from folder…")
         self.rag_progress.setVisible(True)
         self.rag_progress.setValue(0)
+        self.rag_cancel_btn.setEnabled(True)
+        self._task_cancelled = False
         self._start_task(
             self._ingest_files_task,
             files,
@@ -169,6 +188,8 @@ class RAGTab(BaseTab):
         self.url_input.clear()
         self.rag_progress.setVisible(True)
         self.rag_progress.setValue(0)
+        self.rag_cancel_btn.setEnabled(True)
+        self._task_cancelled = False
         self._start_task(
             self._ingest_url_task,
             url,
@@ -184,9 +205,17 @@ class RAGTab(BaseTab):
         total = len(file_list)
 
         for idx, file_path in enumerate(file_list):
+            # Check for cancellation
+            if self._task_cancelled:
+                return IngestionSummary(documents=0, chunks=0, message="Ingestion cancelled")
+
             if signals:
                 signals.progress.emit(int(100 * idx / total) if total > 0 else 0)
                 signals.message.emit(f"Processing {file_path.name}…")
+
+        # Don't proceed if cancelled
+        if self._task_cancelled:
+            return IngestionSummary(documents=0, chunks=0, message="Ingestion cancelled")
 
         summary = self.context.ingestion.ingest_local_files(file_list)
 
@@ -197,9 +226,16 @@ class RAGTab(BaseTab):
 
     def _ingest_url_task(self, url: str, *, signals: WorkerSignals | None = None) -> IngestionSummary:
         """Ingest URL content into the RAG system."""
+        if self._task_cancelled:
+            return IngestionSummary(documents=0, chunks=0, message="URL ingestion cancelled")
+
         if signals:
             signals.progress.emit(50)
             signals.message.emit("Fetching content…")
+
+        # Check again before making actual request
+        if self._task_cancelled:
+            return IngestionSummary(documents=0, chunks=0, message="URL ingestion cancelled")
 
         summary = self.context.ingestion.ingest_url(url)
 
@@ -214,9 +250,19 @@ class RAGTab(BaseTab):
         self.rag_file_counter.setText(message)
         self._set_status(message)
 
+    def _on_cancel_ingest(self) -> None:
+        """Handle ingestion cancellation."""
+        self._task_cancelled = True
+        self.rag_cancel_btn.setEnabled(False)
+        self._set_status("Cancelling ingestion…")
+
     def _on_ingest_done(self, result: object) -> None:
         """Handle ingestion completion."""
         self.rag_progress.setVisible(False)
+        self.rag_cancel_btn.setEnabled(False)
+        if self._task_cancelled:
+            self._set_status("Ingestion cancelled")
+            return
         if isinstance(result, IngestionSummary):
             self.rag_log.append(result.to_message())
         self._refresh_sources_table()
