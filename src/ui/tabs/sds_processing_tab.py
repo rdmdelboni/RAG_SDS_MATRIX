@@ -476,12 +476,30 @@ class SDSProcessingTab(BaseTab):
         self._set_status(f"Loaded {len(files)} SDS files")
 
     def _on_process_all_changed(self, state: int) -> None:
-        """Handle process all checkbox change."""
+        """Handle process all checkbox change - only updates status display."""
         if state == QtCore.Qt.CheckState.Checked:
-            self._set_status("Will process all files (including already processed)")
+            self._set_status("Will reprocess selected files (including already processed)")
         else:
-            self._set_status("Will skip already processed files")
-        self._load_folder_contents()
+            self._set_status("Will skip already processed files in selection")
+        
+        # Update status column for processed files without changing selection
+        for idx in range(self.batch_table.rowCount()):
+            file_item = self.batch_table.item(idx, 1)
+            status_item = self.batch_table.item(idx, 3)
+            
+            if file_item and status_item:
+                # Check if file is processed (has ✓ marker)
+                is_processed = file_item.text().startswith("✓ ")
+                
+                if is_processed and status_item.text().startswith("✓ "):
+                    # Update status text only
+                    if state == QtCore.Qt.CheckState.Checked:
+                        status_item.setText("↻ Will reprocess")
+                        status_item.setForeground(QtGui.QColor(self.colors.get("warning", "#f9e2af")))
+                    else:
+                        status_item.setText("✓ Processed")
+                        status_item.setForeground(QtGui.QColor(self.colors.get("success", "#a6e3a1")))
+
 
     def _on_process_sds(self) -> None:
         """Handle SDS batch processing."""
