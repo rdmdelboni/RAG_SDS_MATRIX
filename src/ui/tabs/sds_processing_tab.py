@@ -513,17 +513,19 @@ class SDSProcessingTab(BaseTab):
         self.batch_progress.setValue(0)
 
         use_rag = self.use_rag_checkbox.isChecked()
+        force_reprocess = self.process_all_checkbox.isChecked()
         self._start_task(
             self._process_sds_task,
             selected_files,
             use_rag,
+            force_reprocess,
             on_progress=self._on_batch_progress,
             on_data=self._on_file_processed,
             on_result=self._on_batch_done,
         )
 
     def _process_sds_task(
-        self, selected_files: list[Path], use_rag: bool, *, signals: WorkerSignals | None = None
+        self, selected_files: list[Path], use_rag: bool, force_reprocess: bool, *, signals: WorkerSignals | None = None
     ) -> dict:
         """Process SDS files with error tracking."""
         from ...sds.processor import SDSProcessor
@@ -544,8 +546,8 @@ class SDSProcessingTab(BaseTab):
                     progress = int((i / total) * 100) if total > 0 else 0
                     signals.progress.emit(progress, f"Processing {file_path.name} ({i+1}/{total})...")
                 
-                # Attempt to process the file using SDSProcessor
-                result = processor.process(file_path=file_path, use_rag=use_rag)
+                # Attempt to process the file using SDSProcessor with force_reprocess flag
+                result = processor.process(file_path=file_path, use_rag=use_rag, force_reprocess=force_reprocess)
                 
                 if result and result.extractions:
                     processed_count += 1
