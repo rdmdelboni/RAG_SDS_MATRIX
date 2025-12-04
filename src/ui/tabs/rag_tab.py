@@ -6,10 +6,14 @@ Provides UI for adding documents, URLs, and managing the vector knowledge base.
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Iterable
 
 from PySide6 import QtWidgets
 
 from . import BaseTab, TabContext
+from ...config.constants import SUPPORTED_FORMATS
+from ...rag.ingestion_service import IngestionSummary
+from ..components import WorkerSignals
 
 
 class RAGTab(BaseTab):
@@ -88,28 +92,109 @@ class RAGTab(BaseTab):
     def _on_ingest_files(self) -> None:
         """Handle file ingestion."""
         files, _ = QtWidgets.QFileDialog.getOpenFileNames(
-            self, "Select documents", "", "All Files (*);;PDF (*.pdf);;Text (*.txt);;Markdown (*.md)"
+            self,
+            "Select knowledge files",
+            "",
+            "Supported files (" + " ".join(f"*{ext}" for ext in SUPPORTED_FORMATS) + ")",
         )
         if files:
             self._set_status(f"Ingesting {len(files)} files…")
-            # TODO: Implement file ingestion task
+            self._start_task(
+                self._ingest_files_task,
+                [Path(f) for f in files],
+                on_result=self._on_ingest_done,
+            )
 
     def _on_ingest_folder(self) -> None:
         """Handle folder ingestion."""
-        folder = QtWidgets.QFileDialog.getExistingDirectory(self, "Select folder to ingest")
-        if folder:
-            self._set_status(f"Ingesting folder: {folder}")
-            # TODO: Implement folder ingestion task
+        folder = QtWidgets.QFileDialog.getExistingDirectory(self, "Select folder")
+        if not folder:
+            return
+        folder_path = Path(folder)
+        files: list[Path] = []
+        for suffix in SUPPORTED_FORMATS:
+            files.extend(folder_path.rglob(f"*{suffix}"))
+        if not files:
+            QtWidgets.QMessageBox.information(self, "No files", "No supported files found.")
+            return
+        self._set_status(f"Ingesting {len(files)} files from folder…")
+        self._start_task(
+            self._ingest_files_task,
+            files,
+            on_result=self._on_ingest_done,
+        )
 
     def _on_ingest_url(self) -> None:
         """Handle URL ingestion."""
         url = self.url_input.text().strip()
-        if url:
-            self._set_status(f"Ingesting URL: {url}")
-            self.url_input.clear()
-            # TODO: Implement URL ingestion task
+        if not url:
+            QtWidgets.QMessageBox.warning(self, "Missing URL", "Enter a URL to ingest.")
+            return
+        self._set_status(f"Fetching {url}…")
+        self.url_input.clear()
+        self._start_task(
+            self._ingest_url_task,
+            url,
+            on_result=self._on_ingest_done,
+        )
+
+    def _ingest_files_task(
+        self, files: Iterable[Path], *, signals: WorkerSignals | None = None
+    ) -> IngestionSummary:
+        """Ingest files into the RAG system."""
+        summary = self.context.ingestion.ingest_local_files(files)
+        if signals:
+            signals.message.emit(summary.to_message())
+        return summary
+
+    def _ingest_url_task(self, url: str, *, signals: WorkerSignals | None = None) -> IngestionSummary:
+        """Ingest URL content into the RAG system."""
+        summary = self.context.ingestion.ingest_url(url)
+        if signals:
+            signals.message.emit(summary.to_message())
+        return summary
+
+    def _on_ingest_done(self, result: object) -> None:
+        """Handle ingestion completion."""
+        if isinstance(result, IngestionSummary):
+            self.rag_log.append(result.to_message())
+        self._refresh_sources_table()
+        self._refresh_rag_stats()
+
+    def _refresh_rag_stats(self) -> None:
+        """Update RAG statistics display."""
+        stats = self.context.db.get_statistics()
+        last_updated = stats.get("rag_last_updated") or "Never"
+        text = f"Documents: {stats.get('rag_documents', 0)} | Chunks: {stats.get('rag_chunks', 0)} | Last updated: {last_updated}"
+        self.rag_stats_label.setText(text)
 
     def _refresh_sources_table(self) -> None:
-        """Refresh the sources table."""
-        self._set_status("Refreshing sources table…")
-        # TODO: Implement table refresh logic
+        """Refresh the sources table with current RAG documents."""
+        try:
+            sources = self.context.db.get_rag_documents()
+        except Exception as exc:
+            self._set_status(f"Failed to load sources: {exc}", error=True)
+            self.sources_table.setRowCount(0)
+            return
+
+        rows = []
+        for doc in sources[:200]:
+            ts = doc.get("indexed_at")
+            ts_str = ts.strftime("%Y-%m-%d %H:%M") if hasattr(ts, "strftime") else str(ts or "")
+            rows.append(
+                (
+                    ts_str,
+                    doc.get("title") or doc.get("source_path") or doc.get("source_url") or "",
+                    doc.get("source_type") or "",
+                    str(doc.get("chunk_count", 0)),
+                )
+            )
+
+        self.sources_table.setRowCount(len(rows))
+        for r, row in enumerate(rows):
+            for c, cell in enumerate(row):
+                item = QtWidgets.QTableWidgetItem(cell)
+                item.setFlags(item.flags() & ~1)  # Make read-only
+                self.sources_table.setItem(r, c, item)
+
+        self._set_status(f"Sources table refreshed ({len(rows)} documents)")

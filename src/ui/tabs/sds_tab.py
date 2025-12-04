@@ -8,9 +8,11 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from PySide6 import QtCore, QtWidgets
+from PySide6 import QtCore, QtGui, QtWidgets
 
 from . import BaseTab, TabContext
+from ...config.constants import SUPPORTED_FORMATS
+from ..components import WorkerSignals
 
 
 class SDSTab(BaseTab):
@@ -194,26 +196,121 @@ class SDSTab(BaseTab):
 
     def _load_folder_contents(self) -> None:
         """Load SDS files from selected folder."""
-        # TODO: Implement folder content loading
-        self._set_status("Loading folder contents…")
+        if not self.selected_folder:
+            return
+        files: list[Path] = []
+        for suffix in SUPPORTED_FORMATS:
+            files.extend(self.selected_folder.rglob(f"*{suffix}"))
+
+        # Clear table and populate
+        self.sds_table.clearContents()
+        self.sds_table.setRowCount(len(files))
+
+        # Get processed files metadata
+        try:
+            processed_metadata = self.context.db.get_processed_files_metadata()
+            processed_names = {name for (name, _size) in processed_metadata.keys()}
+        except Exception:
+            processed_names = set()
+
+        for idx, file_path in enumerate(files):
+            is_processed = file_path.name in processed_names
+
+            # Column 0: Checkbox
+            checkbox = QtWidgets.QCheckBox()
+            checkbox.setChecked(True)
+            self._style_checkbox_symbols(checkbox, font_size=16, spacing=0)
+            self.sds_table.setCellWidget(idx, 0, checkbox)
+
+            # Column 1: File name
+            file_display = f"✓ {file_path.name}" if is_processed else file_path.name
+            file_item = QtWidgets.QTableWidgetItem(file_display)
+            if is_processed:
+                file_item.setForeground(QtGui.QColor(self.colors.get("success", "#a6e3a1")))
+            self.sds_table.setItem(idx, 1, file_item)
+
+            # Column 2: Chemical (placeholder)
+            self.sds_table.setItem(idx, 2, QtWidgets.QTableWidgetItem(""))
+
+            # Column 3: Status
+            if is_processed:
+                status_text = "✓ Processed" if not self.process_all_checkbox.isChecked() else "↻ Will reprocess"
+                status_color = self.colors.get("success", "#a6e3a1") if not self.process_all_checkbox.isChecked() else self.colors.get("warning", "#f9e2af")
+            else:
+                status_text = "⏳ Pending"
+                status_color = self.colors.get("text", "#ffffff")
+            status_item = QtWidgets.QTableWidgetItem(status_text)
+            status_item.setForeground(QtGui.QColor(status_color))
+            self.sds_table.setItem(idx, 3, status_item)
+
+        self.sds_table.resizeColumnsToContents()
+        self.sds_info_container.show()
+        self.sds_info.setText(f"Found {len(files)} files | {len(processed_names)} processed")
+        self._set_status(f"Loaded {len(files)} SDS files")
 
     def _on_process_all_changed(self, state: int) -> None:
         """Handle process all checkbox change."""
         if state == QtCore.Qt.CheckState.Checked:
-            self._set_status("Will process all files (including processed)")
+            self._set_status("Will process all files (including already processed)")
         else:
             self._set_status("Will skip already processed files")
+        # Update table status indicators
+        self._load_folder_contents()
 
     def _on_process_sds(self) -> None:
         """Handle SDS processing."""
         if not self.selected_folder:
             self._set_status("Select a folder first", error=True)
             return
-        self._set_status("Starting SDS processing…")
+
+        selected_count = sum(
+            1 for idx in range(self.sds_table.rowCount())
+            if self.sds_table.cellWidget(idx, 0) and getattr(self.sds_table.cellWidget(idx, 0).layout().itemAt(0).widget(), "isChecked", lambda: True)()
+        )
+
+        if selected_count == 0:
+            self._set_status("Select at least one file to process", error=True)
+            return
+
+        self._set_status(f"Starting SDS processing ({selected_count} files)…")
         self._processing = True
         self.process_btn.setEnabled(False)
         self.stop_btn.setEnabled(True)
-        # TODO: Implement processing task
+        self.sds_progress.setValue(0)
+
+        # Start background task
+        use_rag = self.use_rag_checkbox.isChecked()
+        self._start_task(
+            self._process_sds_task,
+            self.selected_folder,
+            use_rag,
+            on_progress=self._on_sds_progress,
+            on_result=self._on_sds_done,
+        )
+
+    def _process_sds_task(
+        self, folder: Path, use_rag: bool, *, signals: WorkerSignals | None = None
+    ) -> dict:
+        """Process SDS files in background."""
+        # TODO: Full implementation with actual SDS processing
+        # For now, return stub result
+        return {"processed": 0, "failed": 0, "message": "SDS processing stub - implement full handler"}
+
+    def _on_sds_progress(self, progress: int, message: str) -> None:
+        """Handle SDS processing progress updates."""
+        self.sds_progress.setValue(progress)
+        self.sds_file_counter.setText(message)
+        self._set_status(message)
+
+    def _on_sds_done(self, result: object) -> None:
+        """Handle SDS processing completion."""
+        self._processing = False
+        self.process_btn.setEnabled(True)
+        self.stop_btn.setEnabled(False)
+        if isinstance(result, dict):
+            msg = f"Processed: {result.get('processed', 0)}, Failed: {result.get('failed', 0)}"
+            self._set_status(msg)
+        self._load_folder_contents()
 
     def _on_stop_processing(self) -> None:
         """Handle processing stop."""
@@ -225,23 +322,78 @@ class SDSTab(BaseTab):
     def _on_build_matrix(self) -> None:
         """Handle matrix building."""
         self._set_status("Building compatibility matrix…")
-        # TODO: Implement matrix building
+        self._start_task(self._build_matrix_task, on_result=self._on_matrix_done)
+
+    def _build_matrix_task(self, *, signals: WorkerSignals | None = None) -> dict:
+        """Build compatibility matrix in background."""
+        try:
+            from ...matrix.builder import MatrixBuilder
+            builder = MatrixBuilder(self.context.db)
+            matrix = builder.build()
+            if signals:
+                signals.message.emit("Matrix built successfully")
+            return {"success": True, "matrix": matrix}
+        except Exception as e:
+            if signals:
+                signals.error.emit(str(e))
+            return {"success": False, "error": str(e)}
+
+    def _on_matrix_done(self, result: object) -> None:
+        """Handle matrix building completion."""
+        if isinstance(result, dict) and result.get("success"):
+            self._set_status("Compatibility matrix built successfully")
+        else:
+            self._set_status(f"Matrix building failed", error=True)
 
     def _on_export(self) -> None:
         """Handle data export."""
-        path = QtWidgets.QFileDialog.getSaveFileName(
+        path, format_filter = QtWidgets.QFileDialog.getSaveFileName(
             self, "Export data", "", "Excel (*.xlsx);;JSON (*.json);;HTML (*.html)"
         )
-        if path[0]:
-            self._set_status(f"Exporting to {Path(path[0]).name}…")
-            # TODO: Implement export
+        if path:
+            self._set_status(f"Exporting to {Path(path).name}…")
+            self._start_task(self._export_task, path, format_filter, on_result=self._on_export_done)
+
+    def _export_task(self, path: str, format_filter: str, *, signals: WorkerSignals | None = None) -> dict:
+        """Export data in background."""
+        try:
+            from ...matrix.exporter import MatrixExporter
+            exporter = MatrixExporter(self.context.db)
+            if "Excel" in format_filter:
+                exporter.export_xlsx(path)
+            elif "JSON" in format_filter:
+                exporter.export_json(path)
+            elif "HTML" in format_filter:
+                exporter.export_html(path)
+            if signals:
+                signals.message.emit(f"Exported to {Path(path).name}")
+            return {"success": True, "path": path}
+        except Exception as e:
+            if signals:
+                signals.error.emit(str(e))
+            return {"success": False, "error": str(e)}
+
+    def _on_export_done(self, result: object) -> None:
+        """Handle export completion."""
+        if isinstance(result, dict) and result.get("success"):
+            self._set_status(f"Export complete: {result.get('path')}")
+        else:
+            self._set_status("Export failed", error=True)
 
     def _on_select_all_files(self) -> None:
         """Select all files in the table."""
-        # TODO: Implement select all
+        for idx in range(self.sds_table.rowCount()):
+            widget = self.sds_table.cellWidget(idx, 0)
+            if widget and hasattr(widget.layout().itemAt(0).widget(), "setChecked"):
+                widget.layout().itemAt(0).widget().setChecked(True)
         self._set_status("Selected all files")
 
     def _on_select_pending_files(self) -> None:
         """Select only pending (unprocessed) files."""
-        # TODO: Implement select pending
+        for idx in range(self.sds_table.rowCount()):
+            name_item = self.sds_table.item(idx, 1)
+            is_processed = name_item and name_item.text().startswith("✓ ")
+            widget = self.sds_table.cellWidget(idx, 0)
+            if widget and hasattr(widget.layout().itemAt(0).widget(), "setChecked"):
+                widget.layout().itemAt(0).widget().setChecked(not is_processed)
         self._set_status("Selected pending files")
