@@ -14,7 +14,7 @@ import zipfile
 from pathlib import Path
 from typing import Any
 
-from PySide6 import QtWidgets
+from PySide6 import QtCore, QtWidgets
 
 from . import BaseTab, TabContext
 from ..components import WorkerSignals
@@ -154,6 +154,35 @@ class AutomationTab(BaseTab):
         g_layout.addWidget(gen_btn, row, 0, 1, 3)
         layout.addWidget(gen_group)
 
+        # Progress bar for long-running operations
+        progress_row = QtWidgets.QHBoxLayout()
+        self.automation_progress = QtWidgets.QProgressBar()
+        self.automation_progress.setStyleSheet(
+            f"QProgressBar {{"
+            f"background-color: {self.colors['input']};"
+            f"border: 1px solid {self.colors['overlay']};"
+            f"border-radius: 4px;"
+            f"height: 20px;"
+            f"text-align: center;"
+            f"}}"
+            f"QProgressBar::chunk {{"
+            f"background-color: {self.colors['primary']};"
+            f"border-radius: 2px;"
+            f"}}"
+        )
+        self.automation_progress.setTextVisible(True)
+        self.automation_progress.setVisible(False)
+        progress_row.addWidget(self.automation_progress)
+
+        self.automation_progress_label = QtWidgets.QLabel("")
+        self.automation_progress_label.setStyleSheet(
+            f"color: {self.colors['text']};"
+            f"font-weight: 500;"
+        )
+        self.automation_progress_label.setAlignment(QtCore.Qt.AlignmentFlag.AlignRight | QtCore.Qt.AlignmentFlag.AlignVCenter)
+        progress_row.addWidget(self.automation_progress_label, 0, QtCore.Qt.AlignmentFlag.AlignRight)
+        layout.addLayout(progress_row)
+
         self.automation_status = QtWidgets.QLabel("Ready")
         self._style_label(self.automation_status, color=self.colors.get("subtext", "#a6adc8"))
         layout.addWidget(self.automation_status)
@@ -219,6 +248,8 @@ class AutomationTab(BaseTab):
 
         self._set_status(f"Starting harvest (limit: {download_limit} per CAS)…")
         self.automation_status.setText("Harvesting…")
+        self.automation_progress.setVisible(True)
+        self.automation_progress.setValue(0)
         self._start_task(
             self._harvest_process_task,
             Path(cas_file),
@@ -307,11 +338,14 @@ class AutomationTab(BaseTab):
 
     def _on_harvest_progress(self, progress: int, message: str) -> None:
         """Handle harvest progress updates."""
+        self.automation_progress.setValue(progress)
+        self.automation_progress_label.setText(message)
         self.automation_status.setText(message)
         self._set_status(message)
 
     def _on_harvest_process_done(self, result: object) -> None:
         """Handle harvest + process completion."""
+        self.automation_progress.setVisible(False)
         if isinstance(result, dict) and result.get("success"):
             msg = f"Harvest complete: {result.get('downloaded', 0)} downloaded, {result.get('processed', 0)} processed"
             self._set_status(msg)
@@ -337,6 +371,8 @@ class AutomationTab(BaseTab):
 
         self._set_status(f"Starting scheduler (interval: {interval}m, iterations: {iterations or '∞'})…")
         self.automation_status.setText("Scheduler running…")
+        self.automation_progress.setVisible(True)
+        self.automation_progress.setValue(0)
         self._start_task(
             self._scheduler_task,
             Path(cas_file),
@@ -434,10 +470,13 @@ class AutomationTab(BaseTab):
 
     def _on_scheduler_progress(self, progress: int, message: str) -> None:
         """Handle scheduler progress updates."""
+        self.automation_progress.setValue(progress)
+        self.automation_progress_label.setText(message)
         self.automation_status.setText(message)
 
     def _on_scheduler_done(self, result: object) -> None:
         """Handle scheduler completion."""
+        self.automation_progress.setVisible(False)
         if isinstance(result, dict) and result.get("success"):
             msg = f"Scheduler complete: {result.get('iterations', 0)} iterations, {result.get('total_downloaded', 0)} downloaded"
             self._set_status(msg)

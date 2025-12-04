@@ -74,6 +74,35 @@ class RAGTab(BaseTab):
         url_row.addWidget(ingest_url_btn)
         layout.addLayout(url_row)
 
+        # Progress bar
+        progress_row = QtWidgets.QHBoxLayout()
+        self.rag_progress = QtWidgets.QProgressBar()
+        self.rag_progress.setStyleSheet(
+            f"QProgressBar {{"
+            f"background-color: {self.colors['input']};"
+            f"border: 1px solid {self.colors['overlay']};"
+            f"border-radius: 4px;"
+            f"height: 20px;"
+            f"text-align: center;"
+            f"}}"
+            f"QProgressBar::chunk {{"
+            f"background-color: {self.colors['primary']};"
+            f"border-radius: 2px;"
+            f"}}"
+        )
+        self.rag_progress.setTextVisible(True)
+        self.rag_progress.setVisible(False)
+        progress_row.addWidget(self.rag_progress)
+
+        self.rag_file_counter = QtWidgets.QLabel("")
+        self.rag_file_counter.setStyleSheet(
+            f"color: {self.colors['text']};"
+            f"font-weight: 500;"
+        )
+        self.rag_file_counter.setAlignment(QtCore.Qt.AlignmentFlag.AlignRight | QtCore.Qt.AlignmentFlag.AlignVCenter)
+        progress_row.addWidget(self.rag_file_counter, 0, QtCore.Qt.AlignmentFlag.AlignRight)
+        layout.addLayout(progress_row)
+
         # Sources table
         self.sources_table = QtWidgets.QTableWidget(0, 4)
         self.sources_table.setHorizontalHeaderLabels(["Timestamp", "Title", "Type", "Chunks"])
@@ -99,9 +128,12 @@ class RAGTab(BaseTab):
         )
         if files:
             self._set_status(f"Ingesting {len(files)} files…")
+            self.rag_progress.setVisible(True)
+            self.rag_progress.setValue(0)
             self._start_task(
                 self._ingest_files_task,
                 [Path(f) for f in files],
+                on_progress=self._on_ingest_progress,
                 on_result=self._on_ingest_done,
             )
 
@@ -118,9 +150,12 @@ class RAGTab(BaseTab):
             QtWidgets.QMessageBox.information(self, "No files", "No supported files found.")
             return
         self._set_status(f"Ingesting {len(files)} files from folder…")
+        self.rag_progress.setVisible(True)
+        self.rag_progress.setValue(0)
         self._start_task(
             self._ingest_files_task,
             files,
+            on_progress=self._on_ingest_progress,
             on_result=self._on_ingest_done,
         )
 
@@ -132,9 +167,12 @@ class RAGTab(BaseTab):
             return
         self._set_status(f"Fetching {url}…")
         self.url_input.clear()
+        self.rag_progress.setVisible(True)
+        self.rag_progress.setValue(0)
         self._start_task(
             self._ingest_url_task,
             url,
+            on_progress=self._on_ingest_progress,
             on_result=self._on_ingest_done,
         )
 
@@ -142,20 +180,43 @@ class RAGTab(BaseTab):
         self, files: Iterable[Path], *, signals: WorkerSignals | None = None
     ) -> IngestionSummary:
         """Ingest files into the RAG system."""
-        summary = self.context.ingestion.ingest_local_files(files)
+        file_list = list(files)
+        total = len(file_list)
+
+        for idx, file_path in enumerate(file_list):
+            if signals:
+                signals.progress.emit(int(100 * idx / total) if total > 0 else 0)
+                signals.message.emit(f"Processing {file_path.name}…")
+
+        summary = self.context.ingestion.ingest_local_files(file_list)
+
         if signals:
+            signals.progress.emit(100)
             signals.message.emit(summary.to_message())
         return summary
 
     def _ingest_url_task(self, url: str, *, signals: WorkerSignals | None = None) -> IngestionSummary:
         """Ingest URL content into the RAG system."""
-        summary = self.context.ingestion.ingest_url(url)
         if signals:
+            signals.progress.emit(50)
+            signals.message.emit("Fetching content…")
+
+        summary = self.context.ingestion.ingest_url(url)
+
+        if signals:
+            signals.progress.emit(100)
             signals.message.emit(summary.to_message())
         return summary
 
+    def _on_ingest_progress(self, progress: int, message: str) -> None:
+        """Handle ingestion progress updates."""
+        self.rag_progress.setValue(progress)
+        self.rag_file_counter.setText(message)
+        self._set_status(message)
+
     def _on_ingest_done(self, result: object) -> None:
         """Handle ingestion completion."""
+        self.rag_progress.setVisible(False)
         if isinstance(result, IngestionSummary):
             self.rag_log.append(result.to_message())
         self._refresh_sources_table()
