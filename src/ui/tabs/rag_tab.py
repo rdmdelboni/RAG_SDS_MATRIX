@@ -210,8 +210,10 @@ class RAGTab(BaseTab):
                 return IngestionSummary(documents=0, chunks=0, message="Ingestion cancelled")
 
             if signals:
-                signals.progress.emit(int(100 * idx / total) if total > 0 else 0)
-                signals.message.emit(f"Processing {file_path.name}…")
+                percent = int(100 * idx / total) if total > 0 else 0
+                msg = f"Processing {file_path.name}…"
+                signals.progress.emit(percent, msg)
+                signals.message.emit(msg)
 
         # Don't proceed if cancelled
         if self._task_cancelled:
@@ -220,8 +222,9 @@ class RAGTab(BaseTab):
         summary = self.context.ingestion.ingest_local_files(file_list)
 
         if signals:
-            signals.progress.emit(100)
-            signals.message.emit(summary.to_message())
+            msg = summary.to_message()
+            signals.progress.emit(100, msg)
+            signals.message.emit(msg)
         return summary
 
     def _ingest_url_task(self, url: str, *, signals: WorkerSignals | None = None) -> IngestionSummary:
@@ -230,7 +233,7 @@ class RAGTab(BaseTab):
             return IngestionSummary(documents=0, chunks=0, message="URL ingestion cancelled")
 
         if signals:
-            signals.progress.emit(50)
+            signals.progress.emit(50, "Fetching content…")
             signals.message.emit("Fetching content…")
 
         # Check again before making actual request
@@ -240,8 +243,9 @@ class RAGTab(BaseTab):
         summary = self.context.ingestion.ingest_url(url)
 
         if signals:
-            signals.progress.emit(100)
-            signals.message.emit(summary.to_message())
+            msg = summary.to_message()
+            signals.progress.emit(100, msg)
+            signals.message.emit(msg)
         return summary
 
     def _on_ingest_progress(self, progress: int, message: str) -> None:

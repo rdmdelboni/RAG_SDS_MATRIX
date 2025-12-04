@@ -1,0 +1,8 @@
+# Exemplo de lista de CAS válida
+67-64-1          # Acetona
+64-17-5          # Etanol
+7732-18-5        # Água
+110-86-1         # Piridina
+98-95-3          # Nitrobenzeno
+7664-93-9        # Ácido Sulfúrico
+1310-73-2        # Hidróxido de Sódio

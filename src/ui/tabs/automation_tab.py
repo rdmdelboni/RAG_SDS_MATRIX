@@ -296,8 +296,9 @@ class AutomationTab(BaseTab):
 
             for idx, cas in enumerate(cas_numbers, 1):
                 if signals:
-                    signals.progress.emit(int(50 * idx / total))
-                    signals.message.emit(f"Searching CAS {cas} ({idx}/{total})…")
+                    msg = f"Searching CAS {cas} ({idx}/{total})…"
+                    signals.progress.emit(int(50 * idx / total), msg)
+                    signals.message.emit(msg)
 
                 results = harvester.find_sds(cas)
                 if not results:
@@ -322,7 +323,7 @@ class AutomationTab(BaseTab):
                         sync.mark_missing(cas, source=res.source, url=res.url, error_message="download failed")
 
             if signals:
-                signals.progress.emit(100)
+                signals.progress.emit(100, f"Complete: {len(downloaded)} downloaded, {processed} processed")
                 signals.message.emit(f"Complete: {len(downloaded)} downloaded, {processed} processed")
 
             return {
