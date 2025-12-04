@@ -1,4 +1,4 @@
-"""Unified SDS Processing tab combining batch processing and pattern testing.
+"""Unified SDS Processing tab combining batch processing and single SDS testing.
 
 This tab merges functionality from both sds_tab.py and regex_lab_tab.py,
 providing a seamless workflow for testing extraction patterns and batch processing.
@@ -26,7 +26,9 @@ class SDSProcessingTab(BaseTab):
         super().__init__(context)
         self.project_root = Path.cwd()
         self.selected_folder: Path | None = None
+        self.last_folder_path: Path | None = None
         self._processing = False
+        self.failed_files: dict[str, str] = {}  # filename -> failure timestamp
         self._build_ui()
 
     def _build_ui(self) -> None:
@@ -43,7 +45,7 @@ class SDSProcessingTab(BaseTab):
         self.mode_batch_radio.setChecked(True)
         self.mode_batch_radio.toggled.connect(self._on_mode_changed)
         
-        self.mode_test_radio = QtWidgets.QRadioButton("🔬 Pattern Testing")
+        self.mode_test_radio = QtWidgets.QRadioButton("🔬 Single SDS Test")
         self.mode_test_radio.toggled.connect(self._on_mode_changed)
         
         mode_layout.addWidget(self.mode_batch_radio)
@@ -59,7 +61,7 @@ class SDSProcessingTab(BaseTab):
         self.batch_widget = self._build_batch_mode()
         self.mode_stack.addWidget(self.batch_widget)
         
-        # Page 1: Pattern Testing Mode
+        # Page 1: Single SDS Test Mode
         self.test_widget = self._build_test_mode()
         self.mode_stack.addWidget(self.test_widget)
         
@@ -217,6 +219,12 @@ class SDSProcessingTab(BaseTab):
         select_all_btn.clicked.connect(self._on_select_all_files)
         info_row.addWidget(select_all_btn)
 
+        unselect_all_btn = QtWidgets.QPushButton("Unselect All")
+        unselect_all_btn.setMaximumWidth(100)
+        unselect_all_btn.setStyleSheet(select_all_btn.styleSheet())
+        unselect_all_btn.clicked.connect(self._on_unselect_all_files)
+        info_row.addWidget(unselect_all_btn)
+
         select_pending_btn = QtWidgets.QPushButton("All Pending")
         select_pending_btn.setMaximumWidth(100)
         select_pending_btn.setStyleSheet(select_all_btn.styleSheet())
@@ -230,7 +238,7 @@ class SDSProcessingTab(BaseTab):
         return widget
 
     def _build_test_mode(self) -> QtWidgets.QWidget:
-        """Build the pattern testing mode UI."""
+        """Build the single SDS test mode UI."""
         widget = QtWidgets.QWidget()
         layout = QtWidgets.QVBoxLayout(widget)
         layout.setSpacing(10)
@@ -361,9 +369,17 @@ class SDSProcessingTab(BaseTab):
 
     def _on_select_folder(self) -> None:
         """Handle folder selection for batch processing."""
-        folder = QtWidgets.QFileDialog.getExistingDirectory(self, "Select SDS folder")
+        # Start from last selected folder or home directory
+        start_dir = str(self.last_folder_path) if self.last_folder_path else str(Path.home())
+        
+        folder = QtWidgets.QFileDialog.getExistingDirectory(
+            self, 
+            "Select SDS folder",
+            start_dir
+        )
         if folder:
             self.selected_folder = Path(folder)
+            self.last_folder_path = self.selected_folder  # Remember this path
             self.folder_label.setText(str(self.selected_folder))
             self._set_status(f"Selected folder: {self.selected_folder.name}")
             self._load_folder_contents()
@@ -390,6 +406,7 @@ class SDSProcessingTab(BaseTab):
 
         for idx, file_path in enumerate(files):
             is_processed = file_path.name in processed_names
+            is_failed = file_path.name in self.failed_files
 
             # Column 0: Checkbox
             checkbox = QtWidgets.QCheckBox()
@@ -398,17 +415,26 @@ class SDSProcessingTab(BaseTab):
             self.batch_table.setCellWidget(idx, 0, checkbox)
 
             # Column 1: File name
-            file_display = f"✓ {file_path.name}" if is_processed else file_path.name
-            file_item = QtWidgets.QTableWidgetItem(file_display)
-            if is_processed:
+            if is_failed:
+                file_display = f"❌ {file_path.name}"
+                file_item = QtWidgets.QTableWidgetItem(file_display)
+                file_item.setForeground(QtGui.QColor(self.colors.get("error", "#f38ba8")))
+            elif is_processed:
+                file_display = f"✓ {file_path.name}"
+                file_item = QtWidgets.QTableWidgetItem(file_display)
                 file_item.setForeground(QtGui.QColor(self.colors.get("success", "#a6e3a1")))
+            else:
+                file_item = QtWidgets.QTableWidgetItem(file_path.name)
             self.batch_table.setItem(idx, 1, file_item)
 
             # Column 2: Chemical (placeholder)
             self.batch_table.setItem(idx, 2, QtWidgets.QTableWidgetItem(""))
 
             # Column 3: Status
-            if is_processed:
+            if is_failed:
+                status_text = f"❌ Process attempt failed on {self.failed_files[file_path.name]}"
+                status_color = self.colors.get("error", "#f38ba8")
+            elif is_processed:
                 status_text = "✓ Processed" if not self.process_all_checkbox.isChecked() else "↻ Will reprocess"
                 status_color = self.colors.get("success", "#a6e3a1") if not self.process_all_checkbox.isChecked() else self.colors.get("warning", "#f9e2af")
             else:
@@ -437,10 +463,12 @@ class SDSProcessingTab(BaseTab):
             self._set_status("Select a folder first", error=True)
             return
 
-        selected_count = sum(
-            1 for idx in range(self.batch_table.rowCount())
-            if self.batch_table.cellWidget(idx, 0) and getattr(self.batch_table.cellWidget(idx, 0).layout().itemAt(0).widget(), "isChecked", lambda: True)()
-        )
+        # Count selected files
+        selected_count = 0
+        for idx in range(self.batch_table.rowCount()):
+            checkbox = self.batch_table.cellWidget(idx, 0)
+            if checkbox and isinstance(checkbox, QtWidgets.QCheckBox) and checkbox.isChecked():
+                selected_count += 1
 
         if selected_count == 0:
             self._set_status("Select at least one file to process", error=True)
@@ -464,9 +492,67 @@ class SDSProcessingTab(BaseTab):
     def _process_sds_task(
         self, folder: Path, use_rag: bool, *, signals: WorkerSignals | None = None
     ) -> dict:
-        """Process SDS files in background."""
-        # TODO: Full implementation with actual SDS processing
-        return {"processed": 0, "failed": 0, "message": "SDS processing stub - implement full handler"}
+        """Process SDS files with error tracking."""
+        from ...sds.processor import SDSProcessor
+        
+        processed_count = 0
+        failed_count = 0
+        failed_files = []
+        
+        # Get selected files
+        selected_files = []
+        for idx in range(self.batch_table.rowCount()):
+            checkbox = self.batch_table.cellWidget(idx, 0)
+            if checkbox and isinstance(checkbox, QtWidgets.QCheckBox) and checkbox.isChecked():
+                file_item = self.batch_table.item(idx, 1)
+                if file_item:
+                    # Remove status markers from filename
+                    filename = file_item.text().replace("✓ ", "").replace("❌ ", "")
+                    file_path = folder / filename
+                    if file_path.exists():
+                        selected_files.append(file_path)
+        
+        total = len(selected_files)
+        processor = SDSProcessor()
+        
+        for i, file_path in enumerate(selected_files):
+            if not self._processing:
+                break
+            
+            try:
+                if signals:
+                    progress = int((i / total) * 100) if total > 0 else 0
+                    signals.progress.emit(progress, f"Processing {file_path.name} ({i+1}/{total})...")
+                
+                # Attempt to process the file using SDSProcessor
+                result = processor.process(file_path=file_path, use_rag=use_rag)
+                
+                if result and result.data:
+                    processed_count += 1
+                    # Remove from failed list if it was there
+                    if file_path.name in self.failed_files:
+                        del self.failed_files[file_path.name]
+                else:
+                    raise ValueError("No data extracted")
+                    
+            except Exception as e:
+                failed_count += 1
+                timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                self.failed_files[file_path.name] = timestamp
+                failed_files.append(f"{file_path.name} ({str(e)})")
+                
+                if signals:
+                    signals.error.emit(f"Failed to process {file_path.name}: {str(e)}")
+        
+        if signals:
+            signals.progress.emit(100, f"Complete: {processed_count} processed, {failed_count} failed")
+        
+        return {
+            "processed": processed_count,
+            "failed": failed_count,
+            "failed_files": failed_files,
+            "message": f"Processed {processed_count} files, {failed_count} failed"
+        }
 
     def _on_batch_progress(self, progress: int, message: str) -> None:
         """Handle batch processing progress updates."""
@@ -480,8 +566,17 @@ class SDSProcessingTab(BaseTab):
         self.process_btn.setEnabled(True)
         self.stop_btn.setEnabled(False)
         if isinstance(result, dict):
-            msg = f"Processed: {result.get('processed', 0)}, Failed: {result.get('failed', 0)}"
-            self._set_status(msg)
+            processed = result.get('processed', 0)
+            failed = result.get('failed', 0)
+            msg = f"Completed: {processed} processed, {failed} failed"
+            self._set_status(msg, error=(failed > 0))
+            
+            # Show detailed error for failed files
+            if failed > 0 and 'failed_files' in result:
+                error_details = "\n".join(result['failed_files'][:5])  # Show first 5
+                if len(result['failed_files']) > 5:
+                    error_details += f"\n... and {len(result['failed_files']) - 5} more"
+                print(f"Failed files:\n{error_details}")
         self._load_folder_contents()
 
     def _on_stop_processing(self) -> None:
@@ -555,25 +650,33 @@ class SDSProcessingTab(BaseTab):
     def _on_select_all_files(self) -> None:
         """Select all files in the table."""
         for idx in range(self.batch_table.rowCount()):
-            widget = self.batch_table.cellWidget(idx, 0)
-            if widget and hasattr(widget.layout().itemAt(0).widget(), "setChecked"):
-                widget.layout().itemAt(0).widget().setChecked(True)
+            checkbox = self.batch_table.cellWidget(idx, 0)
+            if checkbox and isinstance(checkbox, QtWidgets.QCheckBox):
+                checkbox.setChecked(True)
         self._set_status("Selected all files")
+
+    def _on_unselect_all_files(self) -> None:
+        """Unselect all files in the table."""
+        for idx in range(self.batch_table.rowCount()):
+            checkbox = self.batch_table.cellWidget(idx, 0)
+            if checkbox and isinstance(checkbox, QtWidgets.QCheckBox):
+                checkbox.setChecked(False)
+        self._set_status("Unselected all files")
 
     def _on_select_pending_files(self) -> None:
         """Select only pending (unprocessed) files."""
         for idx in range(self.batch_table.rowCount()):
             name_item = self.batch_table.item(idx, 1)
             is_processed = name_item and name_item.text().startswith("✓ ")
-            widget = self.batch_table.cellWidget(idx, 0)
-            if widget and hasattr(widget.layout().itemAt(0).widget(), "setChecked"):
-                widget.layout().itemAt(0).widget().setChecked(not is_processed)
+            checkbox = self.batch_table.cellWidget(idx, 0)
+            if checkbox and isinstance(checkbox, QtWidgets.QCheckBox):
+                checkbox.setChecked(not is_processed)
         self._set_status("Selected pending files")
 
-    # ========== Pattern Testing Mode Methods ==========
+    # ========== Single SDS Test Mode Methods ==========
 
     def _on_select_test_file(self) -> None:
-        """Handle file selection for pattern testing."""
+        """Handle file selection for single SDS testing."""
         path, _ = QtWidgets.QFileDialog.getOpenFileName(
             self, "Select SDS for testing", str(self.project_root), "PDF Files (*.pdf);;All Files (*.*)"
         )
