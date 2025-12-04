@@ -5,7 +5,7 @@ Provides a table for reviewing processed documents and validating extracted fiel
 
 from __future__ import annotations
 
-from PySide6 import QtWidgets
+from PySide6 import QtCore, QtWidgets
 
 from . import BaseTab, TabContext
 from ..components import WorkerSignals
@@ -188,7 +188,7 @@ class ReviewTab(BaseTab):
                 item = QtWidgets.QTableWidgetItem(value)
                 # Make cells editable except for filename (column 0)
                 if col_idx == 0:
-                    item.setFlags(item.flags() & ~2)  # Filename read-only
+                    item.setFlags(item.flags() & ~QtCore.Qt.ItemFlag.ItemIsEditable)  # Filename read-only
                 table.setItem(row_idx, col_idx, item)
 
     def _colorize_not_found(self) -> None:

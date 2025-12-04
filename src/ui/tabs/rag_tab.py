@@ -8,7 +8,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Iterable
 
-from PySide6 import QtWidgets
+from PySide6 import QtCore, QtWidgets
 
 from . import BaseTab, TabContext
 from ...config.constants import SUPPORTED_FORMATS
@@ -194,7 +194,7 @@ class RAGTab(BaseTab):
         for r, row in enumerate(rows):
             for c, cell in enumerate(row):
                 item = QtWidgets.QTableWidgetItem(cell)
-                item.setFlags(item.flags() & ~1)  # Make read-only
+                item.setFlags(item.flags() & ~QtCore.Qt.ItemFlag.ItemIsEditable)  # Make read-only
                 self.sources_table.setItem(r, c, item)
 
         self._set_status(f"Sources table refreshed ({len(rows)} documents)")

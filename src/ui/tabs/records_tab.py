@@ -7,7 +7,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from PySide6 import QtWidgets
+from PySide6 import QtCore, QtWidgets
 
 from . import BaseTab, TabContext
 from ..components import WorkerSignals
@@ -120,5 +120,5 @@ class RecordsTab(BaseTab):
             for col_idx, (key, _) in enumerate(columns):
                 value = str(row_data.get(key, ""))
                 item = QtWidgets.QTableWidgetItem(value)
-                item.setFlags(item.flags() & ~1)  # Make read-only
+                item.setFlags(item.flags() & ~QtCore.Qt.ItemFlag.ItemIsEditable)  # Make read-only
                 table.setItem(row_idx, col_idx, item)
