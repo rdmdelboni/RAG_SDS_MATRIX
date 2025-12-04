@@ -129,11 +129,7 @@ class MainWindow(QtWidgets.QMainWindow):
 
         self._build_ui()
         self._load_last_sds_folder()  # Load last used folder
-        self._refresh_rag_stats()
-        self._refresh_sources_table()
-        self._refresh_db_stats()
-        self._on_refresh_records()
-        self._on_refresh_review()
+        # Note: Tab-based UI handles its own initialization and refreshing
 
     # === UI construction ===
 
