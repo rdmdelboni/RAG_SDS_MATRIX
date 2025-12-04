@@ -553,7 +553,7 @@ class SDSProcessingTab(BaseTab):
                 # Attempt to process the file using SDSProcessor
                 result = processor.process(file_path=file_path, use_rag=use_rag)
                 
-                if result and result.data:
+                if result and result.extractions:
                     processed_count += 1
                     # Remove from failed list if it was there
                     if file_path.name in self.failed_files:
