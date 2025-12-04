@@ -1,233 +1,355 @@
 # RAG SDS Matrix
 
-A RAG-enhanced Safety Data Sheet (SDS) processor that extracts chemical safety information and generates compatibility matrices using a hybrid approach combining heuristic extraction, LLM refinement, and RAG-augmented generation.
+A comprehensive **Safety Data Sheet (SDS) processor** with a modern Qt GUI that extracts chemical safety information, generates compatibility matrices, and provides intelligent knowledge base management using a hybrid approach combining:
 
-![Project Banner](https://placeholder.com/banner.png)
-*(Placeholder: Add a banner image here showing the application running)*
+- 🔍 **Heuristic Extraction** (Regex patterns)
+- 🤖 **LLM Refinement** (Local Ollama models)
+- 🧪 **PubChem Enrichment** (Real-time validation)
+- 🌐 **RAG Augmentation** (Vector search + semantic retrieval)
+- 🚀 **Web Harvesting** (7 chemical supplier integrations)
 
-## 🚀 Features
+![Status: Active Development](https://img.shields.io/badge/Status-Active_Development-blue)
+![Python: 3.11+](https://img.shields.io/badge/Python-3.11+-blue)
+![License: MIT](https://img.shields.io/badge/License-MIT-green)
 
-- **Hybrid Extraction Pipeline**: Combines regex heuristics, LLM refinement, PubChem enrichment, and RAG augmentation
-- **PubChem Integration**: Automatic validation and enrichment using PubChem's chemical database
-  - Validates CAS numbers, product names, and molecular formulas
-  - Fills missing fields (molecular weight, IUPAC names, structure identifiers)
-  - Enriches GHS hazard statements (H/P codes) with complete classifications
-- **CAMEO Chemicals Integration**: Uses NOAA's CAMEO database for accurate reactivity predictions
-- **Multi-format Support**: Process PDF, TXT, MD, and DOCX SDS documents
-- **Chemical Compatibility Matrix**: Automatic generation of incompatibility matrices
-- **Knowledge Base Management**: Build and query a vector database of chemical safety documentation
-- **Decision Auditing**: Full traceability of compatibility decisions with justifications
-- **Regex Lab**: Tool for testing and optimizing vendor-specific extraction patterns
+---
 
-## 📸 Visual Overview
+## 🎯 Core Features
 
-### Main Dashboard
-*(Placeholder: Screenshot of the main application window showing the tabs)*
+### ⚗️ Chemical Data Extraction
+- **Multi-Format Input**: PDF, DOCX, TXT, Markdown
+- **Hybrid Extraction**: Combines regex patterns + LLM refinement
+- **Vendor Routing**: Automatic vendor-specific rule selection
+- **Confidence Scoring**: Quality metrics for each extraction
+- **GHS Classification**: Automatic hazard classification and H/P code assignment
 
-### Matrix View
-*(Placeholder: Screenshot of the generated compatibility matrix with color-coded cells)*
+### 🧪 Data Enrichment
+- **PubChem Integration**: Real-time CAS validation and molecular data lookup
+  - Validates CAS numbers, product names, molecular formulas
+  - Fills missing: molecular weight, IUPAC names, structure identifiers
+  - Enriches GHS H/P statements with complete hazard classifications
+- **CAMEO Chemicals**: NOAA reactivity predictions (~3000+ chemicals)
+- **Auto-Validation**: Cross-checks data consistency across sources
 
-### RAG Search
-*(Placeholder: Screenshot of the RAG search interface with a query and result)*
+### 🔗 Knowledge Management
+- **RAG System**: Vector embeddings + semantic search
+  - Document ingestion with automatic chunking
+  - Query tracking and analytics
+  - Incremental model retraining
+- **Dual Storage**: DuckDB (structured) + ChromaDB (vectors)
+- **Decision Auditing**: Complete traceability with timestamps
+
+### 🗺️ Compatibility Matrix
+- **Automatic Generation**: N×N chemical incompatibility grids
+- **Multi-Source Rules**: MRLP, CAMEO, and manual overrides
+- **Hazard Elevation**: IDLH and environmental risk integration
+- **Multi-Format Export**: Excel, JSON, HTML with styling
+
+### 🕷️ Web Harvesting
+- **7 Provider Integrations**: ChemicalBook, Fisher, VWR, TCI, ChemicalSafety, Chembink, Fluorochem
+- **IP Protection**: Rate limiting, user-agent rotation, automatic retry with backoff
+- **Deduplication**: Prevents duplicate SDS files
+- **Inventory Sync**: Integration with chemical inventory systems
+
+### 🎨 Modern Qt GUI (10 Tabs)
+- 📊 **RAG Tab**: Knowledge base ingestion and management
+- 🧪 **SDS Tab**: Batch document processing with progress tracking
+- 📈 **Records Tab**: View and filter extracted chemical data
+- 👁️ **Review Tab**: Spot-check and review extractions
+- 💾 **Backup Tab**: Export RAG data (JSON/CSV)
+- 💬 **Chat Tab**: Query knowledge base with LLM responses
+- 🔧 **Regex Lab**: Test and optimize extraction patterns
+- ⚙️ **Automation Tab**: Configure automated workflows
+- 📊 **Status Tab**: System health and connection monitoring
+- **Dark/Light theming**, **Async operations**, **Real-time logging**
+
+---
 
 ## 🏗️ Architecture
 
-The system is built on a modular architecture separating the UI, data processing, and storage layers.
-
 ```mermaid
 graph TD
-    User[User / UI] -->|Uploads SDS| Ingest[Ingestion Pipeline]
-    User -->|Queries| RAG[RAG System]
-    
-    subgraph "Ingestion Pipeline"
-        Ingest --> Heuristics[Regex Heuristics]
-        Heuristics -->|Low Confidence| LLM[LLM Refinement]
-        Heuristics -->|High Confidence| PubChem[PubChem Enrichment]
-        LLM --> PubChem
-        PubChem --> DB[(DuckDB Structured)]
-        PubChem --> Vector[(ChromaDB Vectors)]
+    GUI["Qt GUI (10 Tabs)"]
+
+    GUI -->|Upload SDS| Ingest["SDS Ingestion Pipeline"]
+    GUI -->|Queries| RAG["RAG System"]
+    GUI -->|Generate| Matrix["Matrix Builder"]
+    GUI -->|Harvest| Web["Web Harvester"]
+
+    subgraph "SDS Processing (4000+ lines)"
+        Ingest --> Extract["Text Extraction"]
+        Extract --> Heuristic["Heuristic Analysis"]
+        Heuristic --> LLM["LLM Refinement"]
+        LLM --> Enrich["PubChem Enrichment"]
+        Enrich --> Score["Confidence Scoring"]
+        Score --> Storage["Dual Storage"]
     end
-    
-    subgraph "RAG System"
-        Vector -->|Retrieve Context| Context[Context Window]
-        Context -->|Augment Prompt| LLM_RAG[LLM Generation]
-        LLM_RAG -->|Answer| User
+
+    subgraph "Data Layer"
+        Storage -->|Structured| DuckDB["DuckDB"]
+        Storage -->|Vectors| ChromaDB["ChromaDB"]
     end
-    
+
+    subgraph "RAG System (1500+ lines)"
+        ChromaDB -->|Retrieve| Retrieval["Semantic Search"]
+        Retrieval -->|Augment| LLM_RAG["LLM Generation"]
+        LLM_RAG -->|Response| GUI
+    end
+
     subgraph "Matrix Generation"
-        DB --> MatrixBuilder[Matrix Builder]
-        Rules[Incompatibility Rules] --> MatrixBuilder
-        Hazards[Hazard Data] --> MatrixBuilder
-        MatrixBuilder -->|Generate| Matrix[Compatibility Matrix]
+        DuckDB --> MatrixBuilder["Build Rules"]
+        MatrixBuilder -->|Export| Export["Excel/JSON/HTML"]
+        Export --> GUI
+    end
+
+    subgraph "Web Harvesting"
+        Web --> Providers["7 Providers"]
+        Providers -->|Download| Docs["SDS Documents"]
+        Docs -->|Feed| Ingest
     end
 ```
 
-## 🔄 Workflows
+---
 
-### SDS Processing Pipeline
+## 🔄 Data Pipelines
 
-1.  **Text Extraction**: Converts PDF/DOCX to text
-2.  **Heuristic Analysis**: Applies regex patterns to find CAS, UN numbers, and Hazards
-3.  **LLM Refinement**: Uses local LLM (Ollama) to fix extraction errors if confidence is low
-4.  **Enrichment**: Validates data against PubChem and CAMEO databases
-5.  **Storage**: Saves structured data to DuckDB and vector embeddings to ChromaDB
+### SDS Processing Pipeline (5 Stages)
+```
+Input: PDF, DOCX, TXT, Markdown
+  ↓ [1] Text Extraction (pdfplumber, python-docx, pytesseract)
+  ↓ [2] Heuristic Analysis (Regex patterns)
+        ├ CAS numbers, UN codes, H/P codes
+        └ Confidence scoring
+  ↓ [3] LLM Refinement (Ollama - only if low confidence)
+  ↓ [4] PubChem Enrichment (Molecular data, validation)
+  ↓ [5] Storage
+    ├→ DuckDB (structured data)
+    └→ ChromaDB (vector embeddings)
+```
 
-### Matrix Generation Pipeline
+### RAG Knowledge System
+```
+Documents → Ingestion → Chunking → Embedding → ChromaDB
+Query → Semantic Search → Context Assembly → LLM → Response
+                                             ↓
+                                        Query Tracking
+```
 
-1.  **Data Retrieval**: Fetches processed chemicals from DuckDB
-2.  **Rule Application**: Applies incompatibility rules from:
-    *   **MRLP**: Mixed Reactivity Logic Rules
-    *   **CAMEO**: NOAA Reactivity Data
-    *   **Manual Overrides**: User-defined rules
-3.  **Hazard Elevation**: Checks IDLH and environmental risks
-4.  **Matrix Construction**: Builds the N x N compatibility grid
+### Compatibility Matrix Generation
+```
+Chemicals (DuckDB) → Apply Rules → Hazard Elevation → Export
+                                           ↓
+                            (MRLP, CAMEO, Manual)
+```
+
+---
+
+## 📊 Project Statistics
+
+| Metric | Value |
+|--------|-------|
+| **Python Files** | 62 files (16,762 lines) |
+| **Utility Scripts** | 24 scripts (5,903 lines) |
+| **Test Files** | 19 files (1,200+ lines) |
+| **Total Codebase** | 31,365+ lines |
+| **Documentation** | 20+ guides (7,500+ lines) |
+| **Dependencies** | 45+ packages |
+| **UI Tabs** | 10 functional tabs |
+| **Harvester Providers** | 7 integrations |
+
+---
 
 ## 📂 Project Structure
 
 ```
 RAG_SDS_MATRIX/
-├── main.py                 # Application entry point
-├── requirements.txt        # Python dependencies
-├── pytest.ini             # Test configuration
-├── README.md              # This file
-├── TODO.md                # Development tasks
+├── src/                              # Application code (62 files)
+│   ├── config/                       # Settings & i18n
+│   ├── database/                     # DuckDB persistence
+│   ├── harvester/                    # Web scraping (8 files, 7 providers)
+│   ├── matrix/                       # Compatibility matrices (3 files)
+│   ├── models/                       # LLM integration
+│   ├── rag/                          # Vector DB & retrieval (7 files)
+│   ├── sds/                          # Chemical extraction (17 files, 4000+ lines)
+│   │   ├── processor.py              # Main orchestrator
+│   │   ├── extractor.py              # Multi-stage extraction
+│   │   ├── heuristics.py             # Regex patterns
+│   │   ├── confidence_scorer.py      # Quality metrics
+│   │   ├── pubchem_enrichment.py     # PubChem API
+│   │   └── validators/               # Data validation
+│   ├── ui/                           # PySide6 Qt GUI (11+ files)
+│   │   ├── app.py                    # Main window (2,345 lines)
+│   │   ├── components/               # ✨ NEW: Reusable components
+│   │   │   ├── workers.py            # Threading utilities
+│   │   │   └── styled_widgets.py     # Styling functions
+│   │   └── tabs/                     # ✨ NEW: Modular tabs
+│   │       ├── __init__.py           # TabContext & BaseTab
+│   │       └── backup_tab.py         # Template implementation
+│   └── utils/                        # Utilities & logging
 │
-├── src/                   # Source code
-│   ├── config/           # Settings, constants, i18n
-│   ├── database/         # DuckDB persistence
-│   ├── harvester/        # Web scraping for SDS documents
-│   ├── matrix/           # Compatibility matrix building
-│   ├── models/           # Ollama LLM client
-│   ├── rag/              # Vector store, chunking, retrieval
-│   ├── sds/              # SDS extraction pipeline
-│   ├── ui/               # PySide6/Qt interface
-│   └── utils/            # Logging utilities
+├── scripts/                          # Utility scripts (24 files)
+│   ├── Ingestion:
+│   │   ├── ingest_cameo_chemicals.py  # CAMEO data ingestion
+│   │   ├── ingest_mrlp.py             # Incompatibilities
+│   │   └── test_cameo_scraper.py
+│   ├── Processing:
+│   │   ├── sds_pipeline.py            # Batch processing
+│   │   └── rag_sds_processor.py       # RAG-enhanced processing
+│   ├── Management:
+│   │   ├── rag_backup.py              # Data export
+│   │   ├── status.py                  # System status
+│   │   └── harvest_scheduler.py       # Scheduled harvesting
+│   └── Analytics:
+│       ├── analyze_extraction_performance.py
+│       └── benchmark_llm_models.py
 │
-├── tests/                # Test suite
-│   ├── test_heuristics.py
-│   ├── test_matrix_builder.py
+├── tests/                            # Test suite (19 files)
 │   ├── test_sds_processor.py
+│   ├── test_pubchem_enrichment.py
+│   ├── test_matrix_building.py
+│   └── test_end_to_end.py
+│
+├── guides/                           # User guides (7 files)
+│   ├── CAMEO_INGESTION_GUIDE.md      # CAMEO setup & usage
+│   ├── CAMEO_IP_PROTECTION.md        # Security best practices
+│   ├── PUBCHEM_ENRICHMENT_GUIDE.md   # Data enrichment
 │   └── ...
 │
-├── scripts/              # Python utility scripts
-│   ├── ingest_mrlp.py   # Structured data ingestion
-│   ├── fetch_sds.py     # SDS harvester
-│   ├── sds_pipeline.py  # SDS processing pipeline
-│   └── status.py        # System status check
-│
-├── bin/                  # Shell convenience scripts
-│   ├── backup_rag.sh    # Quick RAG backup
-│   ├── process_sds_with_rag.sh  # RAG-enhanced processing
-│   └── run_sds_pipeline.sh      # Complete pipeline
-│
-├── guides/               # Feature documentation
-│   ├── QUICK_START_GUIDE.md
-│   ├── CAMEO_SETUP.md
-│   ├── PUBCHEM_ENRICHMENT_GUIDE.md
+├── docs/                             # Technical docs (13 files)
+│   ├── RAG_OPTIMIZATION_GUIDE.md     # Query tracking
+│   ├── RAG_QUICK_START.md            # Quick reference
 │   └── ...
 │
-├── docs/                 # Technical documentation
-│   ├── USAGE_GUIDE.md
-│   ├── RAG_OPTIMIZATION_GUIDE.md
-│   └── ...
+├── bin/                              # Shell scripts (3 files)
+│   ├── run_app.sh                    # Launch GUI
+│   ├── process_sds_with_rag.sh       # RAG processing
+│   └── run_sds_pipeline.sh           # Complete pipeline
 │
-├── examples/             # Example scripts
-│   └── rag_tracking_example.py
+├── archive/                          # Historical documentation
+│   ├── implementation_notes/         # 9 feature summaries
+│   ├── session_notes/                # 15 session notes
+│   └── old_scripts/                  # Deprecated code
 │
-├── packaging/            # Deployment configuration
-│   └── packaging.md
+├── data/                             # Runtime data (auto-created)
+│   ├── duckdb/                       # DuckDB files
+│   ├── chroma_db/                    # ChromaDB vectors
+│   ├── logs/                         # Application logs
+│   └── output/                       # Export results
 │
-├── archive/              # Historical documentation
-│   ├── implementation_notes/
-│   ├── session_notes/
-│   └── old_scripts/
-│
-└── data/                 # Data directories (auto-created)
-    ├── chroma_db/       # Vector database
-    ├── duckdb/          # Structured database
-    ├── logs/            # Application logs
-    ├── input/           # Input documents
-    └── output/          # Export results
+├── README.md                         # This file
+├── CLEANUP_SUMMARY.md                # Recent improvements
+├── REFACTORING_PLAN.md               # UI roadmap
+├── FINAL_PROJECT_INVENTORY.md        # File listing
+├── requirements.txt                  # Dependencies
+└── .env.example                      # Config template
 ```
 
-## 📚 Documentation & Guides
+---
 
-We have organized documentation to help you get started:
+## 🧬 Technology Stack
 
-- **[Guides](/guides/)**: User-friendly guides for specific features (CAMEO, PubChem, RAG).
-- **[Technical Docs](/docs/)**: Deep dives into architecture and configuration.
-- **[Scripts](/scripts/)**: Utility scripts for automation and maintenance.
+| Category | Technologies |
+|----------|--------------|
+| **Language** | Python 3.11+ |
+| **GUI** | PySide6 (Qt6) |
+| **Databases** | DuckDB (structured), ChromaDB (vectors) |
+| **LLM** | Ollama (local models) |
+| **Document Processing** | pdfplumber, python-docx, pytesseract |
+| **Data Science** | Pandas, NumPy, scikit-learn |
+| **Chemistry** | RDKit |
+| **NLP** | LangChain, spaCy |
+| **Web** | BeautifulSoup4, Selenium, requests |
+| **Testing** | pytest |
+| **DevOps** | Docker, docker-compose |
 
-## 🛠️ Installation
+---
 
-### 1. Clone and Setup
+## ⚙️ Installation
 
+### Prerequisites
+- Python 3.11+
+- Ollama (https://ollama.ai)
+- 4GB RAM minimum (8GB+ recommended)
+- 10GB+ disk space
+
+### Setup Steps
 ```bash
+# 1. Clone
 git clone https://github.com/rdmdelboni/RAG_SDS_MATRIX.git
 cd RAG_SDS_MATRIX
+
+# 2. Virtual environment
 python -m venv .venv
-source .venv/bin/activate  # On Windows: .venv\Scripts\activate
-```
+source .venv/bin/activate  # Windows: .venv\Scripts\activate
 
-### 2. Install Dependencies
-
-```bash
+# 3. Dependencies
 pip install -r requirements.txt
-```
 
-### 3. Install Ollama Models
+# 4. Download Ollama models
+ollama pull qwen2.5:7b-instruct-q4_K_M  # Main LLM
+ollama pull qwen3-embedding:4b           # Embeddings
 
-```bash
-ollama pull qwen2.5:7b-instruct-q4_K_M
-ollama pull llama3.1:8b
-ollama pull qwen3-embedding:4b
-```
-
-### 4. Configure Environment
-
-```bash
+# 5. Configure
 cp .env.example .env
 # Edit .env with your settings
 ```
 
-## 🚦 Usage
+---
 
-### Start the Application
+## 🚀 Usage
 
+### Launch GUI Application
 ```bash
-python main.py
+source .venv/bin/activate
+python -m src.ui.app
 ```
 
-### Command Line Tools
-
-The project includes several convenience scripts in the `bin/` directory:
-
-- **Process SDS**: `./bin/process_sds_with_rag.sh /path/to/sds`
-- **Run Pipeline**: `./bin/run_sds_pipeline.sh /path/to/sds`
-- **Backup Data**: `./bin/backup_rag.sh`
-
-## 🧪 Testing
-
-Run the test suite to ensure everything is working:
-
+### Process SDS Documents (CLI)
 ```bash
-pytest
+python scripts/sds_pipeline.py /path/to/sds/folder
 ```
 
-## 🤝 Contributing
+### Ingest CAMEO Chemicals
+```bash
+python scripts/ingest_cameo_chemicals.py
+```
 
-1. Fork the repository
-2. Create a feature branch
-3. Commit your changes
-4. Push to the branch
-5. Open a Pull Request
-
-## 📄 License
-
-This project is licensed under the MIT License - see the LICENSE file for details.
+### Check System Status
+```bash
+python scripts/status.py
+```
 
 ---
 
-**Version**: 1.1.0  
-**Last Updated**: December 3, 2025  
-**Status**: Active Development 🚧
+## 🧪 Testing
+
+```bash
+pytest                    # Run all tests
+pytest -v                 # Verbose
+pytest --cov             # Coverage report
+```
+
+---
+
+## 📚 Documentation
+
+**For Users**:
+- [CAMEO Setup Guide](guides/CAMEO_INGESTION_GUIDE.md)
+- [PubChem Enrichment](guides/PUBCHEM_ENRICHMENT_GUIDE.md)
+
+**For Developers**:
+- [RAG Optimization Guide](docs/RAG_OPTIMIZATION_GUIDE.md)
+- [UI Refactoring Plan](REFACTORING_PLAN.md)
+- [Project Inventory](FINAL_PROJECT_INVENTORY.md)
+
+---
+
+## 📄 License
+
+MIT License - see [LICENSE](LICENSE) for details.
+
+---
+
+**Version**: 1.2.0
+**Last Updated**: December 4, 2025
+**Status**: Active Development (UI Refactoring in Progress)

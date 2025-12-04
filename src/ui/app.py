@@ -32,6 +32,16 @@ from ..sds.profile_router import ProfileRouter
 from ..sds.regex_catalog import get_regex_catalog
 from ..utils.logger import get_logger
 from .theme import get_colors
+from .tabs import TabContext, BaseTab
+from .tabs.backup_tab import BackupTab
+from .tabs.records_tab import RecordsTab
+from .tabs.review_tab import ReviewTab
+from .tabs.status_tab import StatusTab
+from .tabs.chat_tab import ChatTab
+from .tabs.regex_lab_tab import RegexLabTab
+from .tabs.automation_tab import AutomationTab
+from .tabs.rag_tab import RAGTab
+from .tabs.sds_tab import SDSTab
 
 logger = get_logger(__name__)
 
@@ -172,15 +182,43 @@ class MainWindow(QtWidgets.QMainWindow):
         self.tabs = QtWidgets.QTabWidget()
         layout.addWidget(self.tabs)
 
-        self.tabs.addTab(self._create_rag_tab(), "RAG")
-        self.tabs.addTab(self._create_sds_tab(), "SDS")
-        self.tabs.addTab(self._create_records_tab(), "Records")
-        self.tabs.addTab(self._create_review_tab(), "Review")
-        self.tabs.addTab(self._create_backup_tab(), "Backup")
-        self.tabs.addTab(self._create_status_tab(), "Status")
-        self.tabs.addTab(self._create_chat_tab(), "Chat")
-        self.tabs.addTab(self._create_automation_tab(), "Automation")
-        self.tabs.addTab(self._create_regex_lab_tab(), "Regex Lab")
+        # Create TabContext for passing shared services to all tabs
+        tab_context = TabContext(
+            db=self.db,
+            ingestion=self.ingestion,
+            ollama=self.ollama,
+            profile_router=self.profile_router,
+            heuristics=self.heuristics,
+            sds_extractor=self.sds_extractor,
+            colors=self.colors,
+            app_settings=self.app_settings,
+            thread_pool=self.thread_pool,
+            set_status=self._set_status,
+            on_error=self._on_error,
+            start_task=self._start_task,
+        )
+
+        # Instantiate all tabs with TabContext
+        self.rag_tab = RAGTab(tab_context)
+        self.sds_tab = SDSTab(tab_context)
+        self.records_tab = RecordsTab(tab_context)
+        self.review_tab = ReviewTab(tab_context)
+        self.backup_tab = BackupTab(tab_context)
+        self.status_tab = StatusTab(tab_context)
+        self.chat_tab = ChatTab(tab_context)
+        self.automation_tab = AutomationTab(tab_context)
+        self.regex_lab_tab = RegexLabTab(tab_context)
+
+        # Add tabs to tab widget
+        self.tabs.addTab(self.rag_tab, "RAG")
+        self.tabs.addTab(self.sds_tab, "SDS")
+        self.tabs.addTab(self.records_tab, "Records")
+        self.tabs.addTab(self.review_tab, "Review")
+        self.tabs.addTab(self.backup_tab, "Backup")
+        self.tabs.addTab(self.status_tab, "Status")
+        self.tabs.addTab(self.chat_tab, "Chat")
+        self.tabs.addTab(self.automation_tab, "Automation")
+        self.tabs.addTab(self.regex_lab_tab, "Regex Lab")
 
         self.status_bar = self.statusBar()
         self.status_label = QtWidgets.QLabel(get_text("app.ready"))
@@ -897,6 +935,10 @@ class MainWindow(QtWidgets.QMainWindow):
         self.status_label.setText(message)
         log_fn = logger.error if error else logger.info
         log_fn(message)
+
+    def _on_error(self, message: str) -> None:
+        """Handle error callback from tabs (via TabContext)."""
+        self._set_status(message, error=True)
 
     def _system_prefers_dark(self) -> bool:
         """Heuristic to follow OS theme based on palette brightness."""
