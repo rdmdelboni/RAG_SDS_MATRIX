@@ -29,7 +29,32 @@ class SDSProcessingTab(BaseTab):
         self.last_folder_path: Path | None = None
         self._processing = False
         self.failed_files: dict[str, str] = {}  # filename -> failure timestamp
+        self.config_file = Path.home() / ".sds_processing_tab_config.json"
+        self._load_persistent_config()
         self._build_ui()
+
+    def _load_persistent_config(self) -> None:
+        """Load persistent configuration from config file."""
+        try:
+            if self.config_file.exists():
+                with open(self.config_file, "r") as f:
+                    config = json.load(f)
+                    last_path = config.get("last_folder_path")
+                    if last_path and Path(last_path).exists():
+                        self.last_folder_path = Path(last_path)
+        except Exception as e:
+            print(f"Error loading persistent config: {e}")
+
+    def _save_persistent_config(self) -> None:
+        """Save persistent configuration to config file."""
+        try:
+            config = {
+                "last_folder_path": str(self.last_folder_path) if self.last_folder_path else None
+            }
+            with open(self.config_file, "w") as f:
+                json.dump(config, f, indent=2)
+        except Exception as e:
+            print(f"Error saving persistent config: {e}")
 
     def _build_ui(self) -> None:
         """Build the unified SDS processing UI."""
@@ -373,13 +398,14 @@ class SDSProcessingTab(BaseTab):
         start_dir = str(self.last_folder_path) if self.last_folder_path else str(Path.home())
         
         folder = QtWidgets.QFileDialog.getExistingDirectory(
-            self, 
+            self,
             "Select SDS folder",
             start_dir
         )
         if folder:
             self.selected_folder = Path(folder)
             self.last_folder_path = self.selected_folder  # Remember this path
+            self._save_persistent_config()  # Persist to disk
             self.folder_label.setText(str(self.selected_folder))
             self._set_status(f"Selected folder: {self.selected_folder.name}")
             self._load_folder_contents()
