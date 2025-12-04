@@ -5,7 +5,7 @@ Provides a table for reviewing processed documents and validating extracted fiel
 
 from __future__ import annotations
 
-from PySide6 import QtCore, QtWidgets
+from PySide6 import QtCore, QtGui, QtWidgets
 
 from . import BaseTab, TabContext
 from ..components import WorkerSignals
@@ -198,8 +198,8 @@ class ReviewTab(BaseTab):
         - Green (#a6e3a1) for SUCCESS
         - Red (#f38ba8) for FAILED and NOT_FOUND
         """
-        success_color = self.colors.get("success", "#a6e3a1")  # Catppuccin Mocha green
-        error_color = self.colors.get("error", "#f38ba8")  # Catppuccin Mocha red
+        success_color = QtGui.QColor(self.colors.get("success", "#a6e3a1"))  # Catppuccin Mocha green
+        error_color = QtGui.QColor(self.colors.get("error", "#f38ba8"))  # Catppuccin Mocha red
 
         for row in range(self.review_table.rowCount()):
             # Status is in column 1

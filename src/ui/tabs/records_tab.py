@@ -7,7 +7,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from PySide6 import QtCore, QtWidgets
+from PySide6 import QtCore, QtGui, QtWidgets
 
 from . import BaseTab, TabContext
 from ..components import WorkerSignals
@@ -126,8 +126,8 @@ class RecordsTab(BaseTab):
 
     def _colorize_status_column(self, table: QtWidgets.QTableWidget) -> None:
         """Color status cells based on status value (SUCCESS, FAILED, NOT_FOUND)."""
-        success_color = self.colors.get("success", "#a6e3a1")  # Catppuccin Mocha green
-        error_color = self.colors.get("error", "#f38ba8")  # Catppuccin Mocha red
+        success_color = QtGui.QColor(self.colors.get("success", "#a6e3a1"))  # Catppuccin Mocha green
+        error_color = QtGui.QColor(self.colors.get("error", "#f38ba8"))  # Catppuccin Mocha red
 
         for row in range(table.rowCount()):
             # Status is in column 1
