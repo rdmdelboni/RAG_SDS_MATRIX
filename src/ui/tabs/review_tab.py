@@ -161,8 +161,8 @@ class ReviewTab(BaseTab):
                 ("hazard_class", "Hazard"),
             ],
         )
-        # Color NOT_FOUND entries in red
-        self._colorize_not_found()
+        # Color status cells based on status value
+        self._colorize_status_column()
         self._set_status("Review table refreshed")
 
     def _populate_table(
@@ -191,14 +191,25 @@ class ReviewTab(BaseTab):
                     item.setFlags(item.flags() & ~QtCore.Qt.ItemFlag.ItemIsEditable)  # Filename read-only
                 table.setItem(row_idx, col_idx, item)
 
-    def _colorize_not_found(self) -> None:
-        """Color 'NOT_FOUND' status cells red."""
-        error_color = self.colors.get("error", "#f38ba8")
+    def _colorize_status_column(self) -> None:
+        """Color status cells based on status value (SUCCESS, FAILED, NOT_FOUND).
+
+        Uses Catppuccin Mocha colors:
+        - Green (#a6e3a1) for SUCCESS
+        - Red (#f38ba8) for FAILED and NOT_FOUND
+        """
+        success_color = self.colors.get("success", "#a6e3a1")  # Catppuccin Mocha green
+        error_color = self.colors.get("error", "#f38ba8")  # Catppuccin Mocha red
+
         for row in range(self.review_table.rowCount()):
             # Status is in column 1
             item = self.review_table.item(row, 1)
-            if item and "NOT_FOUND" in item.text():
-                item.setForeground(error_color)
+            if item:
+                status = item.text().upper()
+                if "SUCCESS" in status:
+                    item.setForeground(success_color)
+                elif "FAILED" in status or "NOT_FOUND" in status:
+                    item.setForeground(error_color)
 
     def _on_cell_changed(self, item: QtWidgets.QTableWidgetItem) -> None:
         """Handle cell content change."""

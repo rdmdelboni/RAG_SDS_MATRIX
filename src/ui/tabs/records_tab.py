@@ -98,6 +98,7 @@ class RecordsTab(BaseTab):
                 ("processed_at", "Processed"),
             ],
         )
+        self._colorize_status_column(self.records_table)
         self.records_info.setText(f"Showing {len(result)} records")
         self._set_status("Records refreshed")
 
@@ -122,3 +123,18 @@ class RecordsTab(BaseTab):
                 item = QtWidgets.QTableWidgetItem(value)
                 item.setFlags(item.flags() & ~QtCore.Qt.ItemFlag.ItemIsEditable)  # Make read-only
                 table.setItem(row_idx, col_idx, item)
+
+    def _colorize_status_column(self, table: QtWidgets.QTableWidget) -> None:
+        """Color status cells based on status value (SUCCESS, FAILED, NOT_FOUND)."""
+        success_color = self.colors.get("success", "#a6e3a1")  # Catppuccin Mocha green
+        error_color = self.colors.get("error", "#f38ba8")  # Catppuccin Mocha red
+
+        for row in range(table.rowCount()):
+            # Status is in column 1
+            item = table.item(row, 1)
+            if item:
+                status = item.text().upper()
+                if "SUCCESS" in status:
+                    item.setForeground(success_color)
+                elif "FAILED" in status or "NOT_FOUND" in status:
+                    item.setForeground(error_color)
