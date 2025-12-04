@@ -153,10 +153,18 @@ class RecordsTab(BaseTab):
                 elif "FAILED" in status_text or "NOT_FOUND" in status_text or "ERROR" in status_text:
                     status_item.setForeground(error_color)
 
-            # Second, color all cells that contain "None" (missing data) in red
+            # Second, color all cells in other columns that contain error indicators or missing data
             for col in range(table.columnCount()):
+                # Skip Status column (already processed above)
+                if col == 1:
+                    continue
                 item = table.item(row, col)
                 if item:
                     cell_text = item.text().strip().upper()
-                    if cell_text == "NONE" or cell_text == "":  # Color missing data in red
+                    # Color cells with None, empty values, or error keywords
+                    if (cell_text == "NONE" or
+                        cell_text == "" or
+                        "NOT_FOUND" in cell_text or
+                        "FAILED" in cell_text or
+                        "ERROR" in cell_text):
                         item.setForeground(error_color)
