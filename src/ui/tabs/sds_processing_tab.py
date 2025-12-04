@@ -489,43 +489,7 @@ class SDSProcessingTab(BaseTab):
             self._set_status("Select a folder first", error=True)
             return
 
-        # Count selected files
-        selected_count = 0
-        for idx in range(self.batch_table.rowCount()):
-            checkbox = self.batch_table.cellWidget(idx, 0)
-            if checkbox and isinstance(checkbox, QtWidgets.QCheckBox) and checkbox.isChecked():
-                selected_count += 1
-
-        if selected_count == 0:
-            self._set_status("Select at least one file to process", error=True)
-            return
-
-        self._set_status(f"Starting SDS processing ({selected_count} files)…")
-        self._processing = True
-        self.process_btn.setEnabled(False)
-        self.stop_btn.setEnabled(True)
-        self.batch_progress.setValue(0)
-
-        use_rag = self.use_rag_checkbox.isChecked()
-        self._start_task(
-            self._process_sds_task,
-            self.selected_folder,
-            use_rag,
-            on_progress=self._on_batch_progress,
-            on_result=self._on_batch_done,
-        )
-
-    def _process_sds_task(
-        self, folder: Path, use_rag: bool, *, signals: WorkerSignals | None = None
-    ) -> dict:
-        """Process SDS files with error tracking."""
-        from ...sds.processor import SDSProcessor
-        
-        processed_count = 0
-        failed_count = 0
-        failed_files = []
-        
-        # Get selected files
+        # Get selected files BEFORE starting worker thread (can't access UI from thread)
         selected_files = []
         for idx in range(self.batch_table.rowCount()):
             checkbox = self.batch_table.cellWidget(idx, 0)
@@ -534,9 +498,39 @@ class SDSProcessingTab(BaseTab):
                 if file_item:
                     # Remove status markers from filename
                     filename = file_item.text().replace("✓ ", "").replace("❌ ", "")
-                    file_path = folder / filename
+                    file_path = self.selected_folder / filename
                     if file_path.exists():
                         selected_files.append(file_path)
+
+        if len(selected_files) == 0:
+            self._set_status("Select at least one file to process", error=True)
+            return
+
+        self._set_status(f"Starting SDS processing ({len(selected_files)} files)…")
+        self._processing = True
+        self.process_btn.setEnabled(False)
+        self.stop_btn.setEnabled(True)
+        self.batch_progress.setValue(0)
+
+        use_rag = self.use_rag_checkbox.isChecked()
+        self._start_task(
+            self._process_sds_task,
+            selected_files,
+            use_rag,
+            on_progress=self._on_batch_progress,
+            on_data=self._on_file_processed,
+            on_result=self._on_batch_done,
+        )
+
+    def _process_sds_task(
+        self, selected_files: list[Path], use_rag: bool, *, signals: WorkerSignals | None = None
+    ) -> dict:
+        """Process SDS files with error tracking."""
+        from ...sds.processor import SDSProcessor
+        
+        processed_count = 0
+        failed_count = 0
+        failed_files = []
         
         total = len(selected_files)
         processor = SDSProcessor()
@@ -558,6 +552,14 @@ class SDSProcessingTab(BaseTab):
                     # Remove from failed list if it was there
                     if file_path.name in self.failed_files:
                         del self.failed_files[file_path.name]
+                    
+                    # Emit success signal for UI update
+                    if signals:
+                        signals.data.emit({
+                            'type': 'file_processed',
+                            'filename': file_path.name,
+                            'success': True
+                        })
                 else:
                     raise ValueError("No data extracted")
                     
@@ -567,7 +569,15 @@ class SDSProcessingTab(BaseTab):
                 self.failed_files[file_path.name] = timestamp
                 failed_files.append(f"{file_path.name} ({str(e)})")
                 
+                # Emit failure signal for UI update
                 if signals:
+                    signals.data.emit({
+                        'type': 'file_processed',
+                        'filename': file_path.name,
+                        'success': False,
+                        'error': str(e),
+                        'timestamp': timestamp
+                    })
                     signals.error.emit(f"Failed to process {file_path.name}: {str(e)}")
         
         if signals:
@@ -585,6 +595,42 @@ class SDSProcessingTab(BaseTab):
         self.batch_progress.setValue(progress)
         self.batch_file_counter.setText(message)
         self._set_status(message)
+
+    def _on_file_processed(self, data: dict) -> None:
+        """Handle individual file processing completion (real-time UI update)."""
+        if data.get('type') != 'file_processed':
+            return
+        
+        filename = data.get('filename')
+        success = data.get('success', False)
+        
+        # Find the row with this filename and update its status
+        for idx in range(self.batch_table.rowCount()):
+            file_item = self.batch_table.item(idx, 1)
+            if file_item:
+                # Check if this is the file (with or without markers)
+                item_text = file_item.text().replace("✓ ", "").replace("❌ ", "")
+                if item_text == filename:
+                    if success:
+                        # Update to success
+                        file_item.setText(f"✓ {filename}")
+                        file_item.setForeground(QtGui.QColor(self.colors.get("success", "#a6e3a1")))
+                        
+                        status_item = self.batch_table.item(idx, 3)
+                        if status_item:
+                            status_item.setText("✓ Processed")
+                            status_item.setForeground(QtGui.QColor(self.colors.get("success", "#a6e3a1")))
+                    else:
+                        # Update to failed
+                        file_item.setText(f"❌ {filename}")
+                        file_item.setForeground(QtGui.QColor(self.colors.get("error", "#f38ba8")))
+                        
+                        timestamp = data.get('timestamp', datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
+                        status_item = self.batch_table.item(idx, 3)
+                        if status_item:
+                            status_item.setText(f"❌ Process attempt failed on {timestamp}")
+                            status_item.setForeground(QtGui.QColor(self.colors.get("error", "#f38ba8")))
+                    break
 
     def _on_batch_done(self, result: object) -> None:
         """Handle batch processing completion."""
