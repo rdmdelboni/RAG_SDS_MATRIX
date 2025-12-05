@@ -24,6 +24,7 @@ class WorkerSignals(QtCore.QObject):
     message = QtCore.Signal(str)  # Status messages
     progress = QtCore.Signal(int, str)  # percent, label
     file_result = QtCore.Signal(str, str, str, int)  # filename, chemical, status, row_idx
+    data = QtCore.Signal(dict)  # Generic data dict for UI updates
 
 
 class TaskRunner(QtCore.QRunnable):

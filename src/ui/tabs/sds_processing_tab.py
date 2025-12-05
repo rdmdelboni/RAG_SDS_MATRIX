@@ -29,30 +29,23 @@ class SDSProcessingTab(BaseTab):
         self.last_folder_path: Path | None = None
         self._processing = False
         self.failed_files: dict[str, str] = {}  # filename -> failure timestamp
-        self.config_file = Path.home() / ".sds_processing_tab_config.json"
         self._load_persistent_config()
         self._build_ui()
 
     def _load_persistent_config(self) -> None:
-        """Load persistent configuration from config file."""
+        """Load persistent configuration from QSettings."""
         try:
-            if self.config_file.exists():
-                with open(self.config_file, "r") as f:
-                    config = json.load(f)
-                    last_path = config.get("last_folder_path")
-                    if last_path and Path(last_path).exists():
-                        self.last_folder_path = Path(last_path)
+            last_path = self.context.app_settings.value("sds_processing/last_folder")
+            if last_path and Path(last_path).exists():
+                self.last_folder_path = Path(last_path)
         except Exception as e:
             print(f"Error loading persistent config: {e}")
 
     def _save_persistent_config(self) -> None:
-        """Save persistent configuration to config file."""
+        """Save persistent configuration to QSettings."""
         try:
-            config = {
-                "last_folder_path": str(self.last_folder_path) if self.last_folder_path else None
-            }
-            with open(self.config_file, "w") as f:
-                json.dump(config, f, indent=2)
+            val = str(self.last_folder_path) if self.last_folder_path else ""
+            self.context.app_settings.setValue("sds_processing/last_folder", val)
         except Exception as e:
             print(f"Error saving persistent config: {e}")
 
@@ -957,7 +950,7 @@ class SDSProcessingTab(BaseTab):
                 json.dump(data, f, indent=2)
 
             self._set_status(f"✓ Saved pattern for {profile}.{field}")
-            self.test_status.setText(f"✓ Pattern saved to catalog")
+            self.test_status.setText("✓ Pattern saved to catalog")
             
             # Clear the editor fields
             self.edit_field_input.clear()
