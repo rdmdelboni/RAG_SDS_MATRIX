@@ -29,7 +29,7 @@ def setup_logging() -> None:
 
     # Console handler with Rich formatting
     console_handler = RichHandler(
-        console=Console(stderr=True),
+        console=Console(stderr=True, width=160),
         show_time=True,
         show_path=False,
         rich_tracebacks=True,

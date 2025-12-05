@@ -19,6 +19,11 @@ from ...sds.profile_router import ProfileRouter
 from ..components import WorkerSignals
 
 
+from ...utils.logger import get_logger
+
+logger = get_logger(__name__)
+
+
 class SDSProcessingTab(BaseTab):
     """Unified tab for SDS extraction testing and batch processing."""
 
@@ -444,6 +449,9 @@ class SDSProcessingTab(BaseTab):
                 file_item.setForeground(QtGui.QColor(self.colors.get("success", "#a6e3a1")))
             else:
                 file_item = QtWidgets.QTableWidgetItem(file_path.name)
+            
+            # Store full path for robust retrieval
+            file_item.setData(QtCore.Qt.ItemDataRole.UserRole, str(file_path))
             self.batch_table.setItem(idx, 1, file_item)
 
             # Column 2: Chemical (placeholder)
@@ -502,18 +510,45 @@ class SDSProcessingTab(BaseTab):
 
         # Get selected files BEFORE starting worker thread (can't access UI from thread)
         selected_files = []
-        for idx in range(self.batch_table.rowCount()):
+        row_count = self.batch_table.rowCount()
+        logger.info(f"Scanning {row_count} rows for selection...")
+        
+        for idx in range(row_count):
             checkbox = self.batch_table.cellWidget(idx, 0)
-            if checkbox and isinstance(checkbox, QtWidgets.QCheckBox) and checkbox.isChecked():
-                file_item = self.batch_table.item(idx, 1)
-                if file_item:
-                    # Remove status markers from filename
-                    filename = file_item.text().replace("✓ ", "").replace("❌ ", "")
-                    file_path = self.selected_folder / filename
-                    if file_path.exists():
-                        selected_files.append(file_path)
+            if checkbox and isinstance(checkbox, QtWidgets.QCheckBox):
+                if checkbox.isChecked():
+                    file_item = self.batch_table.item(idx, 1)
+                    if file_item:
+                        # Try retrieving from UserRole first (robust method)
+                        stored_path = file_item.data(QtCore.Qt.ItemDataRole.UserRole)
+                        if stored_path:
+                            file_path = Path(stored_path)
+                            if file_path.exists():
+                                selected_files.append(file_path)
+                                logger.info(f"Row {idx}: Added {file_path.name}")
+                            else:
+                                logger.warning(f"Row {idx}: File not found at {file_path}")
+                        else:
+                            # Fallback: Remove status markers from filename (fragile)
+                            raw_text = file_item.text()
+                            filename = raw_text.replace("✓ ", "").replace("❌ ", "")
+                            file_path = self.selected_folder / filename
+                            
+                            if file_path.exists():
+                                selected_files.append(file_path)
+                                logger.info(f"Row {idx}: Added {filename} (legacy fallback)")
+                            else:
+                                logger.warning(f"Row {idx}: File not found at {file_path}")
+                    else:
+                        logger.warning(f"Row {idx}: No file item found")
+                else:
+                    # logger.info(f"Row {idx}: Checkbox not checked")
+                    pass
+            else:
+                logger.warning(f"Row {idx}: Checkbox widget missing or invalid")
 
         if len(selected_files) == 0:
+            logger.error(f"Selection failed. {row_count} rows, {len(selected_files)} selected.")
             self._set_status("Select at least one file to process", error=True)
             return
 
