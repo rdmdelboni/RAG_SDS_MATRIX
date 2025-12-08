@@ -189,13 +189,11 @@ class SDSPipelineManager:
         # Import extraction services
         try:
             from src.sds.processor import SDSProcessor
-            from src.sds.extractor import SDSExtractor
         except ImportError as e:
             logger.error(f"Failed to import extraction modules: {e}")
             return []
 
         processor = SDSProcessor()
-        extractor = SDSExtractor()
 
         extraction_results = []
 
@@ -207,7 +205,7 @@ class SDSPipelineManager:
             )
 
             try:
-                # Load document
+                # Load document for auxiliary chem extraction
                 from src.rag.document_loader import DocumentLoader
 
                 doc_loader = DocumentLoader()
@@ -225,11 +223,26 @@ class SDSPipelineManager:
                     )
                     continue
 
-                # Extract SDS data
-                sds_data = processor.process_documents(documents)
+                # Full SDS processing (handles extraction + enrichment)
+                processing_result = processor.process(file_path)
 
-                # Extract chemical information
-                chemicals = extractor.extract_chemicals(documents)
+                # Build a lightweight chemical list from extracted fields
+                extractions = getattr(processing_result, "extractions", {}) or {}
+                chemicals = []
+                chem_name = (
+                    extractions.get("product_name", {}).get("value")
+                    or extractions.get("substance_name", {}).get("value")
+                )
+                cas_number = extractions.get("cas_number", {}).get("value")
+                hazard_class = extractions.get("hazard_class", {}).get("value")
+                if chem_name or cas_number or hazard_class:
+                    chemicals.append(
+                        {
+                            "name": chem_name or "unknown",
+                            "cas_number": cas_number or "unknown",
+                            "hazard_class": hazard_class,
+                        }
+                    )
 
                 extraction_results.append(
                     {
@@ -240,7 +253,8 @@ class SDSPipelineManager:
                         "data": {
                             "document_count": len(documents),
                             "chemicals": chemicals,
-                            "sds_data": sds_data,
+                            "sds_data": extractions,
+                            "processing_status": getattr(processing_result, "status", "unknown"),
                         },
                     }
                 )
@@ -324,8 +338,13 @@ class SDSPipelineManager:
 
         # Build matrix
         try:
-            matrix = matrix_builder.build(all_chemicals)
-            logger.info(f"Generated compatibility matrix: {len(matrix)} entries")
+            matrix = matrix_builder.build_incompatibility_matrix()
+            matrix_shape = tuple(matrix.shape) if hasattr(matrix, "shape") else None
+            logger.info(
+                "Generated compatibility matrix" + (
+                    f": {matrix_shape[0]}x{matrix_shape[1]}" if matrix_shape else ""
+                )
+            )
         except Exception as e:
             logger.error(f"Error building matrix: {e}")
             matrix = None
@@ -334,7 +353,7 @@ class SDSPipelineManager:
             "timestamp": datetime.now().isoformat(),
             "files_processed": processed_files,
             "unique_chemicals": len(all_chemicals),
-            "matrix_entries": len(matrix) if matrix else 0,
+            "matrix_entries": int(matrix.size) if getattr(matrix, "size", 0) else 0,
             "chemicals": list(all_chemicals.keys()),
         }
 
@@ -470,8 +489,14 @@ Examples:
             print(f"... and {len(extraction_list) - 10} more files")
         print()
 
+        # Step 3: Extract and classify
+        manager.extract_and_classify()
+
         if args.extract_only:
             logger.info("Stopping after extraction (--extract-only)")
+            output_path = Path(args.output)
+            output_path.mkdir(parents=True, exist_ok=True)
+            manager.save_results(output_path)
             return 0
 
         # Step 4: Process

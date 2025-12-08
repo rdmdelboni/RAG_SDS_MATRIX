@@ -120,6 +120,7 @@ class BaseTab(QtWidgets.QWidget):
         *args,
         on_result: Callable | None = None,
         on_progress: Callable | None = None,
+        on_data: Callable | None = None,
     ) -> None:
         """Start a background task via MainWindow."""
         self.context.start_task(
@@ -127,6 +128,7 @@ class BaseTab(QtWidgets.QWidget):
             *args,
             on_result=on_result,
             on_progress=on_progress,
+            on_data=on_data,
         )
 
 

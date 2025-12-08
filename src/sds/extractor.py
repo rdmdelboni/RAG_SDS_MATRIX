@@ -57,11 +57,12 @@ class SDSExtractor:
         ),
     ]
 
-    def extract_pdf(self, file_path: Path) -> dict[str, Any]:
+    def extract_pdf(self, file_path: Path, progress_callback=None) -> dict[str, Any]:
         """Extract text and metadata from PDF.
 
         Args:
             file_path: Path to PDF file
+            progress_callback: Optional callback(current, total, message) for progress updates
 
         Returns:
             Dictionary with 'text' and 'sections'
@@ -144,8 +145,10 @@ class SDSExtractor:
                     avg_chars,
                     blank_ratio,
                 )
+                if progress_callback:
+                    progress_callback(0, page_count, f"Starting OCR on {page_count} pages...")
                 try:
-                    ocr_text = self._ocr_pdf_full(file_path)
+                    ocr_text = self._ocr_pdf_doctr(file_path, progress_callback=progress_callback)
                     if ocr_text and len(ocr_text.strip()) > len(full_text.strip()) * 0.8:
                         full_text = ocr_text
                         logger.info(
@@ -173,8 +176,10 @@ class SDSExtractor:
                         warning_counter.count,
                         warn_threshold,
                     )
+                    if progress_callback:
+                        progress_callback(0, page_count, f"Starting OCR on {page_count} pages (graphics detected)...")
                     try:
-                        ocr_text = self._ocr_pdf_full(file_path)
+                        ocr_text = self._ocr_pdf_doctr(file_path, progress_callback=progress_callback)
                         if ocr_text and len(ocr_text.strip()) > len(full_text.strip()) * 0.5:
                             full_text = ocr_text
                             logger.info("Full OCR fallback used after graphics warnings")
@@ -182,6 +187,16 @@ class SDSExtractor:
                         logger.warning("OCR fallback after graphics warnings failed: %s", exc)
         except Exception as exc:  # pragma: no cover
             logger.debug("OCR fallback decision failed: %s", exc)
+
+        # If pdfplumber yielded nothing, try a full docTR OCR as a last resort
+        if page_count == 0 or not full_text.strip():
+            doctr_text = self._ocr_pdf_doctr(file_path)
+            if doctr_text.strip():
+                return {
+                    "text": doctr_text,
+                    "page_count": page_count or len(doctr_text.split("\n\n")),
+                    "sections": self._extract_sections(doctr_text),
+                }
 
         return {
             "text": full_text,
@@ -232,7 +247,7 @@ class SDSExtractor:
         return None
 
     def _ocr_page(self, page: Any) -> str:
-        """Extract text from page using OCR.
+        """Extract text from page using OCR (docTR primary, Ollama fallback).
 
         Args:
             page: pdfplumber page object
@@ -241,42 +256,87 @@ class SDSExtractor:
             Extracted text
         """
         try:
-            # Convert page to image
             import io
-
-            from ..models import get_ollama_client
 
             page_img = page.to_image(resolution=150)
             pil_img = getattr(page_img, "original", None)
             if pil_img is None:
                 return ""
+
+            # Try docTR first (faster, better for structured docs)
+            text = self._ocr_page_doctr(pil_img)
+            if text.strip():
+                logger.debug("docTR extracted %d characters", len(text))
+                return text
+
+            # Fallback to Ollama if docTR fails or returns empty
+            logger.debug("docTR returned empty, trying Ollama fallback")
+            from ..models import get_ollama_client
+
+            ollama = get_ollama_client()
             img_bytes = io.BytesIO()
             pil_img.save(img_bytes, format="PNG")
             img_bytes.seek(0)
-
-            # Use Ollama OCR (throttled)
-            ollama = get_ollama_client()
             self._throttle_ocr()
             text = ollama.ocr_image_bytes(img_bytes.read())
-
-            logger.debug("OCR extracted %d characters", len(text))
+            logger.debug("Ollama extracted %d characters", len(text))
             return text
 
         except TimeoutError as e:
-            logger.debug("OCR timeout (this is normal for large images - skipping): %s", e)
+            logger.debug("OCR timeout (skipping): %s", e)
             return ""
         except Exception as e:
             logger.debug("OCR failed (skipping): %s", e)
             return ""
 
+    def _ocr_page_doctr(self, pil_image: Any) -> str:
+        """Extract text from PIL image using docTR.
+
+        Args:
+            pil_image: PIL Image object
+
+        Returns:
+            Extracted text
+        """
+        try:
+            import torch
+            from doctr.io import DocumentFile
+            from doctr.models import ocr_predictor
+
+            # Initialize model once (lazy load via class var to avoid repeated init)
+            if not hasattr(self, '_doctr_model'):
+                device = "cuda" if torch.cuda.is_available() else "cpu"
+                logger.info("Initializing docTR model on %s (first use)", device)
+                self._doctr_model = ocr_predictor(pretrained=True).to(device)
+
+            # Predict on image
+            doc = DocumentFile.from_pil(pil_image)
+            result = self._doctr_model(doc)
+
+            # Extract text from result
+            text_parts = []
+            for page in result.pages:
+                for block in page.blocks:
+                    for line in block.lines:
+                        for word in line.words:
+                            text_parts.append(word.value)
+                        text_parts.append("\n")
+
+            return " ".join(text_parts)
+
+        except ImportError:
+            logger.debug("docTR not available (install with: pip install doctr)")
+            return ""
+        except Exception as e:
+            logger.debug("docTR extraction failed: %s", e)
+            return ""
+
     def _ocr_pdf_full(self, file_path: Path) -> str:
-        """Perform OCR on all pages of a PDF (slow fallback)."""
+        """Perform OCR on all pages of a PDF using docTR (fast) or Ollama (fallback)."""
         try:
             import pdfplumber
-            import io
             from ..models import get_ollama_client
 
-            ollama = get_ollama_client()
             parts: list[str] = []
             with pdfplumber.open(file_path) as pdf:
                 for page_num, page in enumerate(pdf.pages, 1):
@@ -285,22 +345,79 @@ class SDSExtractor:
                         pil_img = getattr(page_img, "original", None)
                         if pil_img is None:
                             continue
+
+                        # Try docTR first (faster, better for structured docs)
+                        text = self._ocr_page_doctr(pil_img)
+                        if text.strip():
+                            parts.append(f"\n--- Page {page_num} (docTR OCR) ---\n{text}")
+                            continue
+
+                        # Fallback to Ollama
+                        import io
+
+                        ollama = get_ollama_client()
                         buf = io.BytesIO()
                         pil_img.save(buf, format="PNG")
                         buf.seek(0)
                         self._throttle_ocr()
                         text = ollama.ocr_image_bytes(buf.read())
                         if text:  # Only add non-empty results
-                            parts.append(f"\n--- Page {page_num} (FULL OCR) ---\n{text}")
-                    except TimeoutError as exc:  # pragma: no cover
-                        logger.debug("Full OCR page %d timeout (expected for large images - skipping)", page_num)
+                            parts.append(f"\n--- Page {page_num} (Ollama OCR) ---\n{text}")
+
+                    except TimeoutError:  # pragma: no cover
+                        logger.debug("Full OCR page %d timeout (skipping)", page_num)
                         continue
-                    except Exception as exc:  # pragma: no cover
-                        logger.debug("Full OCR page %d failed: %s", page_num, exc)
+                    except Exception as e:  # pragma: no cover
+                        logger.debug("Full OCR page %d failed: %s", page_num, e)
                         continue
+
             return "\n".join(parts)
-        except Exception as exc:  # pragma: no cover
-            logger.debug("Full PDF OCR failed (skipping): %s", exc)
+        except Exception as e:  # pragma: no cover
+            logger.debug("Full PDF OCR failed (skipping): %s", e)
+            return ""
+
+    def _ocr_pdf_doctr(self, file_path: Path, progress_callback=None) -> str:
+        """OCR an entire PDF using docTR directly (bypasses pdfplumber).
+        
+        Args:
+            file_path: Path to PDF file
+            progress_callback: Optional callback function(current, total, message)
+        """
+        try:
+            import torch
+            from doctr.io import DocumentFile
+            from doctr.models import ocr_predictor
+
+            if not hasattr(self, "_doctr_model"):
+                device = "cuda" if torch.cuda.is_available() else "cpu"
+                logger.info("Initializing docTR model on %s (full-PDF fallback)", device)
+                self._doctr_model = ocr_predictor(pretrained=True).to(device)
+
+            doc = DocumentFile.from_pdf(file_path)
+            total_pages = len(doc)
+            
+            if progress_callback:
+                progress_callback(0, total_pages, f"OCR starting ({total_pages} pages)...")
+            
+            result = self._doctr_model(doc)
+
+            text_parts = []
+            for page_idx, page in enumerate(result.pages, 1):
+                if progress_callback:
+                    progress_callback(page_idx, total_pages, f"OCR page {page_idx}/{total_pages}...")
+                
+                for block in page.blocks:
+                    for line in block.lines:
+                        line_text = " ".join(word.value for word in line.words)
+                        text_parts.append(line_text)
+                text_parts.append("\n")
+
+            return "\n".join(text_parts)
+        except ImportError:
+            logger.debug("docTR not available for full-PDF OCR")
+            return ""
+        except Exception as e:  # pragma: no cover
+            logger.debug("docTR full-PDF OCR failed: %s", e)
             return ""
 
     # === OCR Rate Limiting ===
@@ -459,11 +576,12 @@ class SDSExtractor:
 
         return ""
 
-    def extract_document(self, file_path: Path) -> dict[str, Any]:
+    def extract_document(self, file_path: Path, progress_callback=None) -> dict[str, Any]:
         """Extract all information from an SDS document.
 
         Args:
             file_path: Path to document
+            progress_callback: Optional callback(current, total, message) for progress updates
 
         Returns:
             Dictionary with extracted data
@@ -478,7 +596,7 @@ class SDSExtractor:
         try:
             # Extract based on file type
             if file_path.suffix.lower() == ".pdf":
-                result = self.extract_pdf(file_path)
+                result = self.extract_pdf(file_path, progress_callback=progress_callback)
             else:
                 # Treat as text file
                 text = file_path.read_text(encoding="utf-8")

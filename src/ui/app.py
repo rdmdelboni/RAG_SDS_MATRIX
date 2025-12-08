@@ -8,6 +8,9 @@ status views) while relying on the existing backend services.
 from __future__ import annotations
 
 
+import os
+import ctypes
+from ctypes.util import find_library
 from pathlib import Path
 from typing import Callable
 
@@ -33,11 +36,16 @@ from .tabs.status_tab import StatusTab
 from .tabs.chat_tab import ChatTab
 from .tabs.regex_lab_tab import RegexLabTab
 from .tabs.automation_tab import AutomationTab
+from .tabs.graph_tab import GraphTab
 from .tabs.rag_tab import RAGTab
 from .tabs.sds_tab import SDSTab
 from .tabs.sds_processing_tab import SDSProcessingTab
 
 logger = get_logger(__name__)
+
+
+class QtInitError(RuntimeError):
+    """Raised when the Qt application cannot be initialized."""
 
 
 class MainWindow(QtWidgets.QMainWindow):
@@ -163,6 +171,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self.chat_tab = ChatTab(tab_context)
         self.automation_tab = AutomationTab(tab_context)
         self.regex_lab_tab = RegexLabTab(tab_context)
+        self.graph_tab = GraphTab(tab_context)
 
         # Add tabs to tab widget
         self.tabs.addTab(self.rag_tab, "RAG")
@@ -174,6 +183,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self.tabs.addTab(self.status_tab, "Status")
         self.tabs.addTab(self.chat_tab, "Chat")
         self.tabs.addTab(self.automation_tab, "Automation")
+        self.tabs.addTab(self.graph_tab, "🕸️ Graph")
         self.tabs.addTab(self.regex_lab_tab, "Regex Lab (Legacy)")
 
         self.status_bar = self.statusBar()
@@ -205,7 +215,14 @@ class MainWindow(QtWidgets.QMainWindow):
         except Exception:
             return False
 
-    def _start_task(self, fn: Callable, *args, on_result: Callable | None = None, on_progress: Callable | None = None) -> None:
+    def _start_task(
+        self,
+        fn: Callable,
+        *args,
+        on_result: Callable | None = None,
+        on_progress: Callable | None = None,
+        on_data: Callable | None = None,
+    ) -> None:
         worker = TaskRunner(fn, *args)
         self._workers.append(worker)
 
@@ -215,9 +232,13 @@ class MainWindow(QtWidgets.QMainWindow):
         # Connect progress signal if handler provided
         if on_progress:
             worker.signals.progress.connect(on_progress)
+
+        # Connect data signal for granular updates (e.g., per-file status)
+        if on_data:
+            worker.signals.data.connect(on_data)
         
         # Connect per-file result updates when handler is present in MainWindow (legacy)
-        # or if the generic handler is used. 
+        # or if the generic handler is used.
         # Note: Tabs now handle their own file results via their own on_progress/on_result callbacks.
         
         if on_result:
@@ -253,14 +274,114 @@ class MainWindow(QtWidgets.QMainWindow):
         # ideally we should signal them to stop
         event.accept()
 
+
+def _configure_qt_plugins() -> None:
+    """Ensure Qt can locate style/platform plugins (e.g., Kvantum)."""
+    plugin_candidates = [
+        Path("/usr/lib/qt6/plugins"),
+        Path("/usr/lib64/qt6/plugins"),
+        Path("/usr/lib/plugins"),
+    ]
+    for candidate in plugin_candidates:
+        styles_dir = candidate / "styles"
+        if styles_dir.exists() and any(styles_dir.glob("libkvantum*.so")):
+            os.environ.setdefault("QT_PLUGIN_PATH", str(candidate))
+            QtCore.QCoreApplication.addLibraryPath(str(candidate))
+            logger.info(f"Qt plugin path added: {candidate}")
+            break
+
+
+def _ensure_platform() -> bool:
+    """Select a safe platform plugin; return True if we forced offscreen."""
+    def _has_xcb_cursor() -> bool:
+        # Try to locate and load the xcb-cursor library; Qt aborts if it is missing.
+        candidates = [
+            "xcb-cursor",
+            "xcb-cursor0",
+            "libxcb-cursor.so.0",
+        ]
+        for candidate in candidates:
+            lib_path = find_library(candidate)
+            if not lib_path:
+                continue
+            try:
+                ctypes.CDLL(lib_path)
+                return True
+            except OSError:
+                continue
+        return False
+
+    has_display = os.environ.get("DISPLAY") or os.environ.get("WAYLAND_DISPLAY")
+    current_platform = os.environ.get("QT_QPA_PLATFORM", "")
+    platform_set = bool(current_platform)
+
+    # If multiple platforms are configured (e.g., "wayland;xcb"), pick one
+    # deterministically to avoid Qt aborts. Prefer Wayland when available.
+    if platform_set and ";" in current_platform:
+        if os.environ.get("WAYLAND_DISPLAY"):
+            chosen = "wayland"
+        elif os.environ.get("DISPLAY"):
+            chosen = "xcb"
+        else:
+            chosen = "offscreen"
+        os.environ["QT_QPA_PLATFORM"] = chosen
+        logger.warning(
+            "Multiple Qt platforms configured (%s); using '%s' to avoid crashes.",
+            current_platform,
+            chosen,
+        )
+        return chosen == "offscreen"
+
+    # Some Wayland setups (e.g., Hyperland with missing runtime deps) crash before
+    # Python can handle the error. Prefer xcb when Xwayland is available.
+    if platform_set and current_platform == "wayland" and os.environ.get("DISPLAY"):
+        os.environ["QT_QPA_PLATFORM"] = "xcb"
+        logger.warning(
+            "Wayland platform requested but may be unstable; using 'xcb' via Xwayland."
+        )
+        return False
+
+    if not platform_set and not has_display:
+        os.environ["QT_QPA_PLATFORM"] = "offscreen"
+        logger.warning("No display detected. Using Qt offscreen platform plugin.")
+        return True
+
+    if not platform_set and not _has_xcb_cursor():
+        os.environ["QT_QPA_PLATFORM"] = "offscreen"
+        logger.warning(
+            "Qt xcb cursor dependency missing; using offscreen platform plugin."
+        )
+        return True
+
+    return False
+
+
+def _create_qt_app(argv: list[str]) -> QtWidgets.QApplication:
+    """Create a QApplication or raise a clear initialization error."""
+    try:
+        existing = QtWidgets.QApplication.instance()
+        return existing or QtWidgets.QApplication(argv)
+    except Exception as exc:
+        raise QtInitError(
+            "Qt platform initialization failed:"
+            f" {exc}. Check platform plugins or required system packages."
+        ) from exc
+
+
 def run_app() -> None:
-    """Run the application."""
+    """Run the application, falling back to CLI when Qt cannot start."""
     import sys
-    # Check if QApplication already exists (e.g. valid in some test scenarios)
-    app = QtWidgets.QApplication.instance()
-    if app is None:
-        app = QtWidgets.QApplication(sys.argv)
-    
+
+    _configure_qt_plugins()
+    forced_offscreen = _ensure_platform()
+
+    # If we forced offscreen (no display server), the UI can't be interacted with.
+    # Raise an explicit error so the caller can fall back to the CLI mode.
+    if forced_offscreen and os.environ.get("QT_QPA_PLATFORM") == "offscreen":
+        raise QtInitError("No display detected for Qt UI (offscreen fallback).")
+
+    app = _create_qt_app(sys.argv)
+
     window = MainWindow()
     window.show()
     sys.exit(app.exec())

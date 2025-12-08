@@ -567,6 +567,7 @@ class SDSProcessingTab(BaseTab):
             force_reprocess,
             on_progress=self._on_batch_progress,
             on_result=self._on_batch_done,
+            on_data=self._on_file_processed,
         )
 
     def _process_sds_task(
@@ -591,8 +592,21 @@ class SDSProcessingTab(BaseTab):
                     progress = int((i / total) * 100) if total > 0 else 0
                     signals.progress.emit(progress, f"Processing {file_path.name} ({i+1}/{total})...")
                 
+                # Define OCR progress callback to emit detailed status
+                def ocr_progress(current_page: int, total_pages: int, message: str):
+                    if signals:
+                        signals.progress.emit(
+                            progress,
+                            f"[{i+1}/{total}] {file_path.name}: {message}"
+                        )
+                
                 # Attempt to process the file using SDSProcessor with force_reprocess flag
-                result = processor.process(file_path=file_path, use_rag=use_rag, force_reprocess=force_reprocess)
+                result = processor.process(
+                    file_path=file_path,
+                    use_rag=use_rag,
+                    force_reprocess=force_reprocess,
+                    progress_callback=ocr_progress
+                )
                 
                 if result and result.extractions:
                     processed_count += 1

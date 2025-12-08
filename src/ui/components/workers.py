@@ -41,7 +41,16 @@ class TaskRunner(QtCore.QRunnable):
     def run(self) -> None:  # pragma: no cover - Qt thread dispatch
         """Execute the callable and emit appropriate signals."""
         try:
-            result = self.fn(*self.args, signals=self.signals, **self.kwargs)
+            # Pass signals only if the callable accepts it to avoid unexpected kwargs.
+            result = None
+            try:
+                result = self.fn(*self.args, signals=self.signals, **self.kwargs)
+            except TypeError as exc:
+                # Retry without signals when the callable doesn't accept it.
+                if "signals" in str(exc):
+                    result = self.fn(*self.args, **self.kwargs)
+                else:
+                    raise
             self.signals.finished.emit(result)
         except Exception as exc:  # pragma: no cover - runtime safety
             logger.error("Worker error: %s", exc)

@@ -87,28 +87,32 @@ def main() -> int:
 
     # Import and run the application
     try:
-        from src.ui.app import run_app
-
-        run_app()
-        return 0
+        from src.ui.app import QtInitError, run_app
     except ImportError as e:
         print(f"\nError importing UI module: {e}")
         print("Running in CLI mode...")
+    else:
+        try:
+            run_app()
+            return 0
+        except QtInitError as e:
+            print(f"\nQt UI failed to start: {e}")
+            print("Running in CLI mode...")
 
-        # Fallback to CLI mode
-        from src.config import get_settings
-        from src.database import get_db_manager
+    # Fallback to CLI mode
+    from src.config import get_settings
+    from src.database import get_db_manager
 
-        settings = get_settings()
-        db = get_db_manager()
-        stats = db.get_statistics()
+    settings = get_settings()
+    db = get_db_manager()
+    stats = db.get_statistics()
 
-        print(f"\nDatabase: {settings.paths.duckdb}")
-        print(f"Documents: {stats['total_documents']}")
-        print(f"Processed: {stats['processed']}")
-        print(f"RAG Documents: {stats['rag_documents']}")
+    print(f"\nDatabase: {settings.paths.duckdb}")
+    print(f"Documents: {stats['total_documents']}")
+    print(f"Processed: {stats['processed']}")
+    print(f"RAG Documents: {stats['rag_documents']}")
 
-        return 0
+    return 0
 
 
 if __name__ == "__main__":

@@ -80,8 +80,67 @@ class DocumentLoader:
             logger.error("PDF loading failed: %s", e)
             raise
 
-        logger.info("Loaded %d pages from PDF", len(documents))
-        return documents
+        if documents:
+            logger.info("Loaded %d pages from PDF", len(documents))
+            return documents
+
+        # Fallback: use docTR when pdfplumber returns no pages/text
+        doctr_docs = self._load_pdf_doctr(file_path)
+        if doctr_docs:
+            logger.info(
+                "Loaded %d pages from PDF via docTR fallback", len(doctr_docs)
+            )
+            return doctr_docs
+
+        logger.warning("No content extracted from PDF: %s", file_path)
+        return []
+
+    def _load_pdf_doctr(self, file_path: Path) -> list[Document]:
+        """Load PDF using docTR directly (layout-aware OCR)."""
+        try:
+            from doctr.io import DocumentFile
+            from doctr.models import ocr_predictor
+        except ImportError:
+            logger.debug("docTR not installed; skipping docTR PDF load")
+            return []
+
+        try:
+            model = getattr(self, "_doctr_model", None)
+            if model is None:
+                logger.info("Initializing docTR model for PDF fallback")
+                model = ocr_predictor(pretrained=True)
+                self._doctr_model = model
+
+            doc = DocumentFile.from_pdf(file_path)
+            result = model(doc)
+
+            docs: list[Document] = []
+            for page_idx, page in enumerate(result.pages, 1):
+                lines = []
+                for block in page.blocks:
+                    for line in block.lines:
+                        line_text = " ".join(word.value for word in line.words)
+                        if line_text.strip():
+                            lines.append(line_text)
+                page_text = "\n".join(lines)
+                if page_text.strip():
+                    docs.append(
+                        Document(
+                            page_content=page_text,
+                            metadata={
+                                "source": str(file_path),
+                                "title": file_path.stem,
+                                "page": page_idx,
+                                "type": "pdf",
+                                "ocr": "doctr",
+                            },
+                        )
+                    )
+
+            return docs
+        except Exception as e:  # pragma: no cover
+            logger.debug("docTR PDF fallback failed: %s", e)
+            return []
 
     def _load_text(self, file_path: Path) -> list[Document]:
         """Load plain text file."""

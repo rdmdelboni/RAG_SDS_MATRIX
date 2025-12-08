@@ -57,13 +57,14 @@ class SDSProcessor:
         self.chunker = TextChunker()
         self.router = ProfileRouter()
 
-    def process(self, file_path: Path, use_rag: bool = True, force_reprocess: bool = False) -> ProcessingResult:
+    def process(self, file_path: Path, use_rag: bool = True, force_reprocess: bool = False, progress_callback=None) -> ProcessingResult:
         """Process a single SDS document.
 
         Args:
             file_path: Path to SDS file
             use_rag: Whether to use RAG enrichment for dangerous chemicals
             force_reprocess: If True, reprocess even if already processed. If False, use cache.
+            progress_callback: Optional callback(current, total, message) for OCR progress
 
         Returns:
             ProcessingResult with extracted data
@@ -169,8 +170,8 @@ class SDSProcessor:
             # === PHASE 1: MULTI-PASS LOCAL EXTRACTION ===
             logger.debug("Phase 1: Multi-pass local extraction starting")
 
-            # Extract text and sections
-            extracted = self.extractor.extract_document(file_path)
+            # Extract text and sections (with OCR progress callback)
+            extracted = self.extractor.extract_document(file_path, progress_callback=progress_callback)
             text = extracted["text"]
             sections = extracted.get("sections", {})
 
