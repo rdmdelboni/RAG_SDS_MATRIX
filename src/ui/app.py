@@ -220,29 +220,35 @@ class MainWindow(QtWidgets.QMainWindow):
         on_progress: Callable | None = None,
         on_data: Callable | None = None,
     ) -> None:
+        logger.debug(f"_start_task called: fn={fn.__name__}, on_progress={on_progress is not None}, on_data={on_data is not None}, on_result={on_result is not None}")
+
         worker = TaskRunner(fn, *args)
         self._workers.append(worker)
 
         worker.signals.message.connect(self._set_status)
         worker.signals.error.connect(lambda msg, w=worker: self._on_worker_error(msg, w))
-        
+
         # Connect progress signal if handler provided
         if on_progress:
+            logger.debug(f"Connecting progress signal to {on_progress}")
             worker.signals.progress.connect(on_progress)
 
         # Connect data signal for granular updates (e.g., per-file status)
         if on_data:
+            logger.debug(f"Connecting data signal to {on_data}")
             worker.signals.data.connect(on_data)
-        
+
         # Connect per-file result updates when handler is present in MainWindow (legacy)
         # or if the generic handler is used.
         # Note: Tabs now handle their own file results via their own on_progress/on_result callbacks.
-        
+
         if on_result:
+            logger.debug(f"Connecting finished signal to {on_result}")
             worker.signals.finished.connect(lambda result, w=worker: self._on_worker_finished(w, on_result, result))
         else:
             worker.signals.finished.connect(lambda result, w=worker: self._on_worker_finished(w, None, result))
 
+        logger.debug(f"Starting task in thread pool, total workers: {len(self._workers)}")
         self.thread_pool.start(worker)
 
     def _on_worker_error(self, message: str, worker: TaskRunner) -> None:

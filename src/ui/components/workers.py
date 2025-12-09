@@ -43,14 +43,19 @@ class TaskRunner(QtCore.QRunnable):
         try:
             # Pass signals only if the callable accepts it to avoid unexpected kwargs.
             result = None
+            logger.debug(f"TaskRunner.run: Starting {self.fn.__name__}")
             try:
+                logger.debug(f"TaskRunner.run: Calling {self.fn.__name__} with signals parameter")
                 result = self.fn(*self.args, signals=self.signals, **self.kwargs)
+                logger.debug(f"TaskRunner.run: {self.fn.__name__} completed successfully")
             except TypeError as exc:
                 # Retry without signals when the callable doesn't accept it.
                 if "signals" in str(exc):
+                    logger.debug(f"TaskRunner.run: {self.fn.__name__} doesn't accept signals, retrying without it")
                     result = self.fn(*self.args, **self.kwargs)
                 else:
                     raise
+            logger.debug(f"TaskRunner.run: Emitting finished signal with result type {type(result).__name__}")
             self.signals.finished.emit(result)
         except Exception as exc:  # pragma: no cover - runtime safety
             logger.error("Worker error: %s", exc)
