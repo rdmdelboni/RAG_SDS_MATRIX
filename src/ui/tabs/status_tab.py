@@ -110,6 +110,41 @@ class StatusTab(BaseTab):
         rag_frame.setLayout(rag_layout)
         layout.addWidget(rag_frame)
 
+        # LLM Performance Metrics Section
+        llm_title = QtWidgets.QLabel("⚡ LLM Performance Metrics")
+        self._style_label(llm_title, bold=True)
+        llm_title.setStyleSheet(llm_title.styleSheet() + f"; font-size: 12px;")
+        layout.addWidget(llm_title)
+
+        llm_frame = QtWidgets.QFrame()
+        llm_frame.setStyleSheet(
+            f"QFrame {{"
+            f"background-color: {self.colors['surface']};"
+            f"border-radius: 6px;"
+            f"padding: 12px;"
+            f"}}"
+        )
+        llm_layout = QtWidgets.QVBoxLayout(llm_frame)
+        llm_layout.setSpacing(6)
+
+        self.llm_metrics_label = QtWidgets.QLabel("LLM Metrics: No data available")
+        self._style_label(self.llm_metrics_label)
+        self.llm_metrics_label.setWordWrap(True)
+        llm_layout.addWidget(self.llm_metrics_label)
+
+        self.llm_cache_label = QtWidgets.QLabel("Cache: No data available")
+        self._style_label(self.llm_cache_label, color=self.colors.get("subtext", "#a6adc8"))
+        llm_layout.addWidget(self.llm_cache_label)
+
+        # Clear Cache Button
+        clear_cache_btn = QtWidgets.QPushButton("🗑️ Clear LLM Cache")
+        self._style_button(clear_cache_btn)
+        clear_cache_btn.clicked.connect(self._on_clear_cache)
+        llm_layout.addWidget(clear_cache_btn)
+
+        llm_frame.setLayout(llm_layout)
+        layout.addWidget(llm_frame)
+
         # Refresh Button
         refresh_btn = QtWidgets.QPushButton("🔄 Refresh All Statistics")
         self._style_button(refresh_btn)
@@ -122,6 +157,56 @@ class StatusTab(BaseTab):
         """Handle refresh button click."""
         self._set_status("Refreshing system statistics…")
         self._refresh_db_stats()
+        self._refresh_llm_metrics()
+
+    def _on_clear_cache(self) -> None:
+        """Handle clear cache button click."""
+        try:
+            self.context.ollama.clear_extraction_cache()
+            self._set_status("LLM cache cleared successfully")
+            self._refresh_llm_metrics()
+        except Exception as e:
+            self._set_status(f"Failed to clear cache: {str(e)[:50]}")
+
+    def _refresh_llm_metrics(self) -> None:
+        """Refresh LLM performance metrics."""
+        try:
+            # Get metrics from OllamaClient
+            metrics_stats = self.context.ollama.get_metrics_stats()
+            cache_stats = self.context.ollama.get_cache_stats()
+
+            if metrics_stats:
+                total_calls = metrics_stats.get("total_calls", 0)
+                success_rate = metrics_stats.get("success_rate", 0) * 100
+                avg_latency = metrics_stats.get("latency", {}).get("avg", 0)
+
+                metrics_text = (
+                    f"Calls: {total_calls} | "
+                    f"Success: {success_rate:.1f}% | "
+                    f"Avg Latency: {avg_latency:.3f}s"
+                )
+                self.llm_metrics_label.setText(metrics_text)
+                self._style_label(self.llm_metrics_label)
+            else:
+                self.llm_metrics_label.setText("LLM Metrics: No data available")
+
+            if cache_stats:
+                cache_hits = cache_stats.get("hits", 0)
+                cache_misses = cache_stats.get("misses", 0)
+                hit_rate = cache_stats.get("hit_rate", 0) * 100
+
+                cache_text = (
+                    f"Cache Hits: {cache_hits} | "
+                    f"Misses: {cache_misses} | "
+                    f"Hit Rate: {hit_rate:.1f}%"
+                )
+                self.llm_cache_label.setText(cache_text)
+                self._style_label(self.llm_cache_label, color=self.colors.get("subtext", "#a6adc8"))
+            else:
+                self.llm_cache_label.setText("Cache: No data available")
+        except Exception as e:
+            self.llm_metrics_label.setText(f"Error: {str(e)[:50]}")
+            self.llm_cache_label.setText("Cache data unavailable")
 
     def _refresh_db_stats(self) -> None:
         """Refresh all status statistics."""

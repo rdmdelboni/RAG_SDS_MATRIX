@@ -48,7 +48,8 @@ class SDSProcessor:
         self.db = get_db_manager()
         self.extractor = SDSExtractor()
         self.heuristics = HeuristicExtractor()
-        self.llm = LLMExtractor()
+        # LLMExtractor now uses few-shot learning by default for better accuracy
+        self.llm = LLMExtractor(use_few_shot=True, use_consensus=False)
         self.validator = FieldValidator()
         self.rag = RAGRetriever()
         self.external_validator = ExternalValidator()
@@ -317,6 +318,9 @@ class SDSProcessor:
                 completeness=completeness,
                 avg_confidence=avg_confidence,
             )
+
+            # Log LLM metrics if available
+            self._log_llm_metrics(file_path.name)
 
             logger.info(
                 "Processed %s in %.2fs (completeness: %.0f%%, confidence: %.0f%%)",
@@ -1037,6 +1041,67 @@ class SDSProcessor:
         
         return extractions
 
+    def _log_llm_metrics(self, filename: str) -> None:
+        """Log LLM performance metrics for a processed document.
+
+        Args:
+            filename: Name of the file being processed
+        """
+        try:
+            # Get metrics from the OllamaClient
+            ollama_client = self.llm.ollama
+            if not hasattr(ollama_client, "get_metrics_stats"):
+                return
+
+            metrics_stats = ollama_client.get_metrics_stats()
+            if not metrics_stats:
+                return
+
+            # Log cache performance
+            cache_stats = ollama_client.get_cache_stats() if hasattr(ollama_client, "get_cache_stats") else {}
+
+            logger.info(
+                "LLM Metrics for %s: "
+                "Calls=%d Success=%.1f%% AvgLatency=%.2fs Cache_hits=%d Hit_rate=%.1f%%",
+                filename,
+                metrics_stats.get("total_calls", 0),
+                metrics_stats.get("success_rate", 0) * 100,
+                metrics_stats.get("latency", {}).get("avg", 0),
+                cache_stats.get("hits", 0),
+                cache_stats.get("hit_rate", 0) * 100 if cache_stats else 0,
+            )
+        except Exception as e:
+            logger.debug("Failed to log LLM metrics: %s", e)
+
+    def get_llm_metrics_summary(self) -> dict[str, Any] | None:
+        """Get current LLM metrics summary for UI display.
+
+        Returns:
+            Dictionary with metrics summary or None if not available
+        """
+        try:
+            ollama_client = self.llm.ollama
+            if not hasattr(ollama_client, "get_metrics_stats"):
+                return None
+
+            metrics_stats = ollama_client.get_metrics_stats()
+            cache_stats = ollama_client.get_cache_stats() if hasattr(ollama_client, "get_cache_stats") else {}
+
+            return {
+                "total_calls": metrics_stats.get("total_calls", 0),
+                "successful_calls": metrics_stats.get("successful_calls", 0),
+                "failed_calls": metrics_stats.get("failed_calls", 0),
+                "success_rate": metrics_stats.get("success_rate", 0),
+                "avg_latency": metrics_stats.get("latency", {}).get("avg", 0),
+                "median_latency": metrics_stats.get("latency", {}).get("median", 0),
+                "cache_hits": cache_stats.get("hits", 0),
+                "cache_misses": cache_stats.get("misses", 0),
+                "cache_hit_rate": cache_stats.get("hit_rate", 0),
+            }
+        except Exception as e:
+            logger.debug("Failed to get LLM metrics summary: %s", e)
+            return None
+
     def process_batch(
         self, file_paths: list[Path], use_rag: bool = True
     ) -> list[ProcessingResult]:
@@ -1072,6 +1137,9 @@ class SDSProcessor:
                         error_message=str(e),
                     )
                 )
+
+        # Log final LLM metrics for the batch
+        self._log_llm_metrics(f"batch of {len(results)} files")
 
         logger.info(
             "Batch processing complete: %d successful, %d failed",
