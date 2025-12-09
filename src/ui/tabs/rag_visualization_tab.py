@@ -237,47 +237,133 @@ class RAGVisualizationTab(BaseTab):
         ]
 
         # Generate based on selection
-        if "Clustering" in viz_type:
-            self.visualizer.visualize_retrieval_network_with_clustering(
-                sample_docs,
-                "How to safely handle sulfuric acid?",
-                sample_similarity,
-                output_dir / "retrieval_network_clustered.html",
-            )
-        elif "Retrieval Network" in viz_type:
-            self.visualizer.visualize_retrieval_network(
-                sample_docs,
-                "How to safely handle sulfuric acid?",
-                output_dir / "retrieval_network.html",
-            )
-        elif "Relevance Dashboard" in viz_type:
-            self.visualizer.visualize_relevance_dashboard(
-                sample_docs, output_dir / "relevance_dashboard.html"
-            )
-        elif "RAG Pipeline" in viz_type:
-            self.visualizer.visualize_rag_pipeline(
-                sample_pipeline, str(output_dir / "rag_pipeline")
-            )
-        elif "Embedding Space" in viz_type:
-            self.visualizer.visualize_embedding_space(
-                sample_docs, sample_embeddings, output_dir / "embedding_space.html"
-            )
-        elif "Similarity Matrix" in viz_type:
-            self.visualizer.visualize_document_similarity(
-                sample_docs, sample_similarity, output_dir / "similarity_heatmap.html"
-            )
-        elif "All" in viz_type:
-            self.visualizer.create_all_visualizations(
-                sample_docs,
-                "How to safely handle sulfuric acid?",
-                sample_pipeline,
-                sample_embeddings,
-                sample_similarity,
-                output_dir,
-            )
+        try:
+            if "Clustering" in viz_type:
+                self.visualizer.visualize_retrieval_network_with_clustering(
+                    sample_docs,
+                    "How to safely handle sulfuric acid?",
+                    sample_similarity,
+                    output_dir / "retrieval_network_clustered.html",
+                )
+            elif "Retrieval Network" in viz_type:
+                self.visualizer.visualize_retrieval_network(
+                    sample_docs,
+                    "How to safely handle sulfuric acid?",
+                    output_dir / "retrieval_network.html",
+                )
+            elif "Relevance Dashboard" in viz_type:
+                self.visualizer.visualize_relevance_dashboard(
+                    sample_docs, output_dir / "relevance_dashboard.html"
+                )
+            elif "RAG Pipeline" in viz_type:
+                self.visualizer.visualize_rag_pipeline(
+                    sample_pipeline, str(output_dir / "rag_pipeline")
+                )
+            elif "Embedding Space" in viz_type:
+                self.visualizer.visualize_embedding_space(
+                    sample_docs, sample_embeddings, output_dir / "embedding_space.html"
+                )
+            elif "Similarity Matrix" in viz_type:
+                self.visualizer.visualize_document_similarity(
+                    sample_docs, sample_similarity, output_dir / "similarity_heatmap.html"
+                )
+            elif "All" in viz_type:
+                # For "All", generate each visualization separately with error handling
+                self._generate_all_visualizations_resilient(
+                    sample_docs,
+                    sample_pipeline,
+                    sample_embeddings,
+                    sample_similarity,
+                    output_dir,
+                )
+        except Exception as e:
+            self._set_status(f"Error: {str(e)}", error=True)
+            return
 
         # Load first generated visualization in preview
         self._load_preview(output_dir)
+
+    def _generate_all_visualizations_resilient(
+        self,
+        documents,
+        pipeline,
+        embeddings,
+        similarity,
+        output_dir,
+    ) -> None:
+        """Generate all visualizations, skipping those that fail due to missing dependencies."""
+        generated = []
+        failed = []
+
+        # 1. Retrieval Network
+        try:
+            self.visualizer.visualize_retrieval_network(
+                documents, "How to safely handle sulfuric acid?", output_dir / "retrieval_network.html"
+            )
+            generated.append("Retrieval Network")
+        except Exception as e:
+            failed.append(("Retrieval Network", str(e)))
+
+        # 2. Clustering Network
+        try:
+            self.visualizer.visualize_retrieval_network_with_clustering(
+                documents,
+                "How to safely handle sulfuric acid?",
+                similarity,
+                output_dir / "retrieval_network_clustered.html",
+            )
+            generated.append("Clustering Network")
+        except Exception as e:
+            failed.append(("Clustering Network", str(e)))
+
+        # 3. Relevance Dashboard
+        try:
+            self.visualizer.visualize_relevance_dashboard(
+                documents, output_dir / "relevance_dashboard.html"
+            )
+            generated.append("Relevance Dashboard")
+        except Exception as e:
+            failed.append(("Relevance Dashboard", str(e)))
+
+        # 4. RAG Pipeline (may fail if Graphviz not installed)
+        try:
+            self.visualizer.visualize_rag_pipeline(
+                pipeline, str(output_dir / "rag_pipeline")
+            )
+            generated.append("RAG Pipeline")
+        except Exception as e:
+            if "graphviz" in str(e).lower() or "dot" in str(e).lower():
+                failed.append(("RAG Pipeline", "Graphviz not installed"))
+            else:
+                failed.append(("RAG Pipeline", str(e)))
+
+        # 5. Embedding Space
+        try:
+            self.visualizer.visualize_embedding_space(
+                documents, embeddings, output_dir / "embedding_space.html"
+            )
+            generated.append("Embedding Space")
+        except Exception as e:
+            failed.append(("Embedding Space", str(e)))
+
+        # 6. Similarity Matrix
+        try:
+            self.visualizer.visualize_document_similarity(
+                documents, similarity, output_dir / "similarity_heatmap.html"
+            )
+            generated.append("Similarity Matrix")
+        except Exception as e:
+            failed.append(("Similarity Matrix", str(e)))
+
+        # Report results
+        status_msg = f"Generated: {', '.join(generated)}"
+        if failed:
+            failed_names = [f[0] for f in failed]
+            status_msg += f"\n⚠️  Skipped: {', '.join(failed_names)}"
+            if any("Graphviz" in f[1] for f in failed):
+                status_msg += "\n(Install Graphviz to enable RAG Pipeline visualization)"
+
+        self._set_status(status_msg)
 
     def _load_preview(self, output_dir: Path) -> None:
         """Load first HTML visualization in preview."""
