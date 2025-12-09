@@ -1,0 +1,40 @@
+digraph {
+	rankdir=LR
+	graph [bgcolor=white splines=ortho]
+	step_0 [label="User Query
+Chemical safety query from user
+
+tokens: 25
+language: en" fillcolor="#E8F4F8" fontname=Helvetica shape=box style=filled]
+	step_1 [label="Document Retrieval
+Search knowledge base for relevant documents
+
+documents_retrieved: 4
+query_time: 0.23s" fillcolor="#B3E5FC" fontname=Helvetica shape=box style=filled]
+	step_2 [label="Ranking & Scoring
+Rank documents by relevance
+
+top_k: 4
+avg_score: 0.82" fillcolor="#81D4FA" fontname=Helvetica shape=box style=filled]
+	step_3 [label="Context Assembly
+Combine top documents as context
+
+context_length: 1250
+compression: 3.2x" fillcolor="#81D4FA" fontname=Helvetica shape=box style=filled]
+	step_4 [label="LLM Generation
+Generate response with LLM
+
+model: qwen2.5
+latency: 1.45s
+tokens: 120" fillcolor="#4FC3F7" fontname=Helvetica shape=box style=filled]
+	step_5 [label="Response
+Final answer to user
+
+confidence: 0.94
+sources: 3" fillcolor="#29B6F6" fontname=Helvetica shape=box style=filled]
+	step_0 -> step_1 [label="" arrowsize=1.5]
+	step_1 -> step_2 [label="" arrowsize=1.5]
+	step_2 -> step_3 [label="" arrowsize=1.5]
+	step_3 -> step_4 [label="" arrowsize=1.5]
+	step_4 -> step_5 [label="" arrowsize=1.5]
+}

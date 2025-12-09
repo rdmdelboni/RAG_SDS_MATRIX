@@ -575,23 +575,28 @@ class SDSProcessingTab(BaseTab):
     ) -> dict:
         """Process SDS files with error tracking."""
         from ...sds.processor import SDSProcessor
-        
+
         processed_count = 0
         failed_count = 0
         failed_files = []
-        
+
         total = len(selected_files)
         processor = SDSProcessor()
-        
+
+        # Log signals availability for debugging
+        logger.debug(f"_process_sds_task started: signals={signals is not None}, total_files={total}")
+
         for i, file_path in enumerate(selected_files):
             if not self._processing:
+                logger.debug("Processing stopped by user")
                 break
-            
+
             try:
                 if signals:
                     progress = int((i / total) * 100) if total > 0 else 0
                     signals.progress.emit(progress, f"Processing {file_path.name} ({i+1}/{total})...")
-                
+                    logger.debug(f"Emitted progress: {progress}% - {file_path.name}")
+
                 # Define OCR progress callback to emit detailed status
                 def ocr_progress(current_page: int, total_pages: int, message: str):
                     if signals:
@@ -599,7 +604,7 @@ class SDSProcessingTab(BaseTab):
                             progress,
                             f"[{i+1}/{total}] {file_path.name}: {message}"
                         )
-                
+
                 # Attempt to process the file using SDSProcessor with force_reprocess flag
                 result = processor.process(
                     file_path=file_path,
@@ -607,31 +612,35 @@ class SDSProcessingTab(BaseTab):
                     force_reprocess=force_reprocess,
                     progress_callback=ocr_progress
                 )
-                
+
                 if result and result.extractions:
                     processed_count += 1
                     # Remove from failed list if it was there
                     if file_path.name in self.failed_files:
                         del self.failed_files[file_path.name]
-                    
+
                     # Emit success signal for UI update
                     if signals:
+                        logger.debug(f"Emitting file_processed signal (success) for {file_path.name}")
                         signals.data.emit({
                             'type': 'file_processed',
                             'filename': file_path.name,
                             'success': True
                         })
+                    else:
+                        logger.warning(f"Signals is None! Cannot emit success for {file_path.name}")
                 else:
                     raise ValueError("No data extracted")
-                    
+
             except Exception as e:
                 failed_count += 1
                 timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
                 self.failed_files[file_path.name] = timestamp
                 failed_files.append(f"{file_path.name} ({str(e)})")
-                
+
                 # Emit failure signal for UI update
                 if signals:
+                    logger.debug(f"Emitting file_processed signal (failure) for {file_path.name}: {str(e)}")
                     signals.data.emit({
                         'type': 'file_processed',
                         'filename': file_path.name,
@@ -640,10 +649,15 @@ class SDSProcessingTab(BaseTab):
                         'timestamp': timestamp
                     })
                     signals.error.emit(f"Failed to process {file_path.name}: {str(e)}")
-        
+                else:
+                    logger.warning(f"Signals is None! Cannot emit failure for {file_path.name}")
+
         if signals:
             signals.progress.emit(100, f"Complete: {processed_count} processed, {failed_count} failed")
-        
+            logger.debug(f"Processing complete: {processed_count} succeeded, {failed_count} failed")
+        else:
+            logger.warning("Signals is None at end of processing")
+
         return {
             "processed": processed_count,
             "failed": failed_count,
@@ -660,38 +674,56 @@ class SDSProcessingTab(BaseTab):
     def _on_file_processed(self, data: dict) -> None:
         """Handle individual file processing completion (real-time UI update)."""
         if data.get('type') != 'file_processed':
+            logger.debug(f"Ignoring data signal with type: {data.get('type')}")
             return
-        
+
         filename = data.get('filename')
         success = data.get('success', False)
-        
+        logger.debug(f"_on_file_processed called: filename={filename}, success={success}")
+
         # Find the row with this filename and update its status
-        for idx in range(self.batch_table.rowCount()):
+        row_count = self.batch_table.rowCount()
+        logger.debug(f"Searching for {filename} in batch_table with {row_count} rows")
+
+        found = False
+        for idx in range(row_count):
             file_item = self.batch_table.item(idx, 1)
             if file_item:
                 # Check if this is the file (with or without markers)
                 item_text = file_item.text().replace("✓ ", "").replace("❌ ", "")
+                logger.debug(f"Row {idx}: checking item_text='{item_text}' against filename='{filename}'")
+
                 if item_text == filename:
+                    found = True
+                    logger.debug(f"Found matching row {idx} for {filename}")
+
                     if success:
                         # Update to success
                         file_item.setText(f"✓ {filename}")
                         file_item.setForeground(QtGui.QColor(self.colors.get("success", "#a6e3a1")))
-                        
+
                         status_item = self.batch_table.item(idx, 3)
                         if status_item:
                             status_item.setText("✓ Processed")
                             status_item.setForeground(QtGui.QColor(self.colors.get("success", "#a6e3a1")))
+                            logger.debug(f"Updated row {idx} status to success")
                     else:
                         # Update to failed
                         file_item.setText(f"❌ {filename}")
                         file_item.setForeground(QtGui.QColor(self.colors.get("error", "#f38ba8")))
-                        
+
                         timestamp = data.get('timestamp', datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
                         status_item = self.batch_table.item(idx, 3)
                         if status_item:
                             status_item.setText(f"❌ Process attempt failed on {timestamp}")
                             status_item.setForeground(QtGui.QColor(self.colors.get("error", "#f38ba8")))
+                            logger.debug(f"Updated row {idx} status to failed")
                     break
+            else:
+                logger.debug(f"Row {idx}: file_item is None")
+
+        if not found:
+            logger.warning(f"Could not find row for file: {filename} (searched {row_count} rows)")
 
     def _on_batch_done(self, result: object) -> None:
         """Handle batch processing completion."""
