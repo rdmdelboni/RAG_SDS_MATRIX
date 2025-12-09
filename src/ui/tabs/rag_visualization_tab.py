@@ -20,8 +20,9 @@ class RAGVisualizationTab(BaseTab):
         """Initialize RAG visualization tab."""
         super().__init__(context)
         self.visualizer = RAGVisualizer()
-        self.output_dir = Path("visualizations")
-        self.output_dir.mkdir(exist_ok=True)
+        # Set default output directory to full path
+        self.output_dir = Path("/home/rdmdelboni/Work/Gits/RAG_SDS_MATRIX/visualizations")
+        self.output_dir.mkdir(exist_ok=True, parents=True)
 
         self._build_ui()
 
@@ -376,22 +377,29 @@ class RAGVisualizationTab(BaseTab):
             self._set_status(f"Preview: {first_file.name}")
 
     def _on_open_output(self) -> None:
-        """Open output directory in file explorer."""
+        """Open output directory in file explorer (Nautilus on Linux, Finder on macOS, Explorer on Windows)."""
         import subprocess
         import sys
 
-        output_dir = Path(self.dir_input.text())
+        output_dir = Path(self.dir_input.text()).resolve()
         if not output_dir.exists():
             self._set_status("Output directory does not exist", error=True)
             return
 
         try:
             if sys.platform == "darwin":  # macOS
-                subprocess.Popen(["open", str(output_dir)])
+                subprocess.Popen(["open", "-R", str(output_dir)])
             elif sys.platform == "win32":  # Windows
-                subprocess.Popen(f'explorer "{output_dir}"')
-            else:  # Linux
-                subprocess.Popen(["xdg-open", str(output_dir)])
+                subprocess.Popen(f'explorer /select,"{output_dir}"')
+            else:  # Linux - try nautilus first, then xdg-open
+                try:
+                    # Try to open with Nautilus (GNOME file manager)
+                    subprocess.Popen(["nautilus", str(output_dir)])
+                except FileNotFoundError:
+                    # Fall back to xdg-open if Nautilus not available
+                    subprocess.Popen(["xdg-open", str(output_dir)])
+
+            self._set_status(f"Opened: {output_dir}")
         except Exception as e:
             self._set_status(f"Failed to open directory: {str(e)[:50]}", error=True)
 
