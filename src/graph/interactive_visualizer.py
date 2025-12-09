@@ -73,12 +73,24 @@ class InteractiveGraphVisualizer:
                 "manufactured_by": "#90EE90",
             }
 
-            for u, v, key, data in graph.edges(keys=True, data=True):
-                edge_type = data.get("type", "unknown")
-                color = edge_color_map.get(edge_type, "#888888")
-                title = f"{edge_type}\n{data.get('justification', '')[:50]}"
-
-                net.add_edge(u, v, color=color, title=title, arrows="to")
+            # Handle both MultiDiGraph and regular Graph types
+            if isinstance(graph, nx.MultiDiGraph):
+                edge_iterator = graph.edges(keys=True, data=True)
+                for u, v, key, data in edge_iterator:
+                    edge_type = data.get("type", "unknown")
+                    color = edge_color_map.get(edge_type, "#888888")
+                    title = f"{edge_type}\n{data.get('justification', '')[:50]}"
+                    net.add_edge(u, v, color=color, title=title, arrows="to")
+            else:
+                # Regular Graph or DiGraph
+                edge_iterator = graph.edges(data=True)
+                for u, v, data in edge_iterator:
+                    edge_type = data.get("type", "unknown")
+                    edge_label = data.get("label", "")
+                    weight = data.get("weight", 1)
+                    color = edge_color_map.get(edge_type, "#888888")
+                    title = f"{edge_label or edge_type}\nWeight: {weight:.2f}"
+                    net.add_edge(u, v, color=color, title=title, arrows="to")
 
             # Configure physics
             if physics:
@@ -145,18 +157,38 @@ class InteractiveGraphVisualizer:
                 "manufactured_by": "#90EE90",
             }
 
-            for u, v, key, data in graph.edges(keys=True, data=True):
-                edge_type = data.get("type", "unknown")
-                color = edge_color_map.get(edge_type, "#888888")
-                justification = data.get("justification", "")[:50]
+            # Handle both MultiDiGraph and regular Graph types
+            if isinstance(graph, nx.MultiDiGraph):
+                edge_iterator = graph.edges(keys=True, data=True)
+                for u, v, key, data in edge_iterator:
+                    edge_type = data.get("type", "unknown")
+                    color = edge_color_map.get(edge_type, "#888888")
+                    justification = data.get("justification", "")[:50]
 
-                edges.append({
-                    "from": node_map[u],
-                    "to": node_map[v],
-                    "color": {"color": color},
-                    "title": f"{edge_type}\n{justification}",
-                    "arrows": "to",
-                })
+                    edges.append({
+                        "from": node_map[u],
+                        "to": node_map[v],
+                        "color": {"color": color},
+                        "title": f"{edge_type}\n{justification}",
+                        "arrows": "to",
+                    })
+            else:
+                # Regular Graph or DiGraph
+                edge_iterator = graph.edges(data=True)
+                for u, v, data in edge_iterator:
+                    edge_type = data.get("type", "unknown")
+                    edge_label = data.get("label", "")
+                    weight = data.get("weight", 1)
+                    color = edge_color_map.get(edge_type, "#888888")
+                    title = f"{edge_label or edge_type}\nWeight: {weight:.2f}"
+
+                    edges.append({
+                        "from": node_map[u],
+                        "to": node_map[v],
+                        "color": {"color": color},
+                        "title": title,
+                        "arrows": "to",
+                    })
 
             # Generate HTML with vis.js
             html = f"""
