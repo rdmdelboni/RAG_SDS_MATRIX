@@ -44,25 +44,41 @@ class InteractiveGraphVisualizer:
 
             # Add nodes with colors based on type
             for node in graph.nodes():
-                node_type = graph.nodes[node].get("type", "chemical")
+                node_attrs = graph.nodes[node]
+
+                # Support both RAG visualizer attributes and chemical network attributes
+                node_type = node_attrs.get("node_type") or node_attrs.get("type", "unknown")
                 color_map = {
                     "chemical": "#4ECDC4",
                     "hazard": "#FF6B6B",
                     "ghs_class": "#FFE66D",
                     "supplier": "#95E1D3",
+                    "query": "#FFD700",
+                    "document": "#4ECDC4",
+                    "unknown": "#CCCCCC",
                 }
-                color = color_map.get(node_type, "#CCCCCC")
 
-                # Get label
-                product_name = graph.nodes[node].get("product_name")
-                label = product_name[:20] if product_name else node[:20]
+                # Use explicit color if provided, otherwise map from type
+                color = node_attrs.get("color") or color_map.get(node_type, "#CCCCCC")
+
+                # Get label - support RAG visualizer label attribute
+                label = node_attrs.get("label")
+                if not label:
+                    product_name = node_attrs.get("product_name")
+                    label = (product_name[:20] if product_name else str(node)[:20])
+
+                # Get title
+                title = node_attrs.get("title")
+                if not title:
+                    product_name = node_attrs.get("product_name")
+                    title = f"{node}\n{product_name or 'Unknown'}"
 
                 net.add_node(
                     node,
                     label=label,
-                    title=f"{node}\n{product_name or 'Unknown'}",
+                    title=title,
                     color=color,
-                    size=30,
+                    size=node_attrs.get("size", 30),
                 )
 
             # Add edges with colors
@@ -96,13 +112,23 @@ class InteractiveGraphVisualizer:
             if physics:
                 net.show_buttons(filter_=["physics"])
 
-            # Add custom styling
-            net.show(str(output_path))
+            # Save visualization
+            try:
+                net.show(str(output_path))
+            except Exception as show_error:
+                # If show() fails, try write_html() as fallback
+                logger.warning(f"PyVis show() failed: {show_error}, trying write_html()...")
+                try:
+                    net.write_html(str(output_path))
+                except Exception as write_error:
+                    logger.error(f"PyVis write_html() also failed: {write_error}")
+                    raise write_error
 
             logger.info(f"Interactive visualization saved to {output_path}")
 
         except Exception as e:
             logger.error(f"Error creating interactive visualization: {e}")
+            raise
 
     @staticmethod
     def get_html_string(
@@ -127,24 +153,42 @@ class InteractiveGraphVisualizer:
             node_map = {}
 
             for node in graph.nodes():
-                node_type = graph.nodes[node].get("type", "chemical")
+                node_attrs = graph.nodes[node]
+
+                # Support both RAG visualizer attributes and chemical network attributes
+                node_type = node_attrs.get("node_type") or node_attrs.get("type", "unknown")
                 color_map = {
                     "chemical": "#4ECDC4",
                     "hazard": "#FF6B6B",
                     "ghs_class": "#FFE66D",
                     "supplier": "#95E1D3",
+                    "query": "#FFD700",
+                    "document": "#4ECDC4",
+                    "unknown": "#CCCCCC",
                 }
-                color = color_map.get(node_type, "#CCCCCC")
-                product_name = graph.nodes[node].get("product_name", "")
-                label = product_name[:20] if product_name else str(node)[:20]
+
+                # Use explicit color if provided, otherwise map from type
+                color = node_attrs.get("color") or color_map.get(node_type, "#CCCCCC")
+
+                # Get label
+                label = node_attrs.get("label")
+                if not label:
+                    product_name = node_attrs.get("product_name", "")
+                    label = product_name[:20] if product_name else str(node)[:20]
+
+                # Get title
+                title = node_attrs.get("title")
+                if not title:
+                    product_name = node_attrs.get("product_name", "")
+                    title = f"{node}\n{product_name}"
 
                 node_map[node] = node_id
                 nodes.append({
                     "id": node_id,
                     "label": label,
-                    "title": f"{node}\n{product_name}",
+                    "title": title,
                     "color": color,
-                    "size": 30,
+                    "size": node_attrs.get("size", 30),
                 })
                 node_id += 1
 
