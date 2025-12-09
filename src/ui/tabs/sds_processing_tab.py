@@ -604,8 +604,11 @@ class SDSProcessingTab(BaseTab):
                     signals.progress.emit(progress, f"Processing {file_path.name} ({i+1}/{total})...")
                     logger.debug(f"Emitted progress: {progress}% - {file_path.name}")
 
-                # Define OCR progress callback to emit detailed status
+                # Define OCR progress callback to emit detailed status and check stop flag
                 def ocr_progress(current_page: int, total_pages: int, message: str):
+                    # Check stop flag even during long-running OCR
+                    if not self._processing:
+                        logger.warning(f"Stop requested during OCR of {file_path.name} (page {current_page}/{total_pages})")
                     if signals:
                         signals.progress.emit(
                             progress,
@@ -620,6 +623,26 @@ class SDSProcessingTab(BaseTab):
                     force_reprocess=force_reprocess,
                     progress_callback=ocr_progress
                 )
+
+                # Check stop flag again after processing completes
+                # (user may have clicked stop while this file was being processed)
+                if not self._processing:
+                    logger.info(f"Stop requested detected after processing {file_path.name}")
+                    if result and result.extractions:
+                        # File was already processed, commit it
+                        processed_count += 1
+                        self._processed_count = processed_count
+                        if signals:
+                            logger.debug(f"Committing processed file {file_path.name} before stopping")
+                            signals.data.emit({
+                                'type': 'file_processed',
+                                'filename': file_path.name,
+                                'success': True
+                            })
+                    # Now stop processing remaining files
+                    stopped_count = total - (i + 1)
+                    logger.info(f"Halting after {processed_count} files. {stopped_count} files remaining.")
+                    break
 
                 if result and result.extractions:
                     processed_count += 1
