@@ -33,6 +33,8 @@ class SDSProcessingTab(BaseTab):
         self.selected_folder: Path | None = None
         self.last_folder_path: Path | None = None
         self._processing = False
+        self._stop_requested = False  # Track if user requested stop
+        self._processed_count = 0  # Track files processed before stop
         self.failed_files: dict[str, str] = {}  # filename -> failure timestamp
         self._load_persistent_config()
         self._build_ui()
@@ -512,7 +514,7 @@ class SDSProcessingTab(BaseTab):
         selected_files = []
         row_count = self.batch_table.rowCount()
         logger.info(f"Scanning {row_count} rows for selection...")
-        
+
         for idx in range(row_count):
             checkbox = self.batch_table.cellWidget(idx, 0)
             if checkbox and isinstance(checkbox, QtWidgets.QCheckBox):
@@ -533,7 +535,7 @@ class SDSProcessingTab(BaseTab):
                             raw_text = file_item.text()
                             filename = raw_text.replace("✓ ", "").replace("❌ ", "")
                             file_path = self.selected_folder / filename
-                            
+
                             if file_path.exists():
                                 selected_files.append(file_path)
                                 logger.info(f"Row {idx}: Added {filename} (legacy fallback)")
@@ -554,6 +556,8 @@ class SDSProcessingTab(BaseTab):
 
         self._set_status(f"Starting SDS processing ({len(selected_files)} files)…")
         self._processing = True
+        self._stop_requested = False  # Reset stop flag at start
+        self._processed_count = 0  # Reset processed count
         self.process_btn.setEnabled(False)
         self.stop_btn.setEnabled(True)
         self.batch_progress.setValue(0)
@@ -573,12 +577,13 @@ class SDSProcessingTab(BaseTab):
     def _process_sds_task(
         self, selected_files: list[Path], use_rag: bool, force_reprocess: bool, *, signals: WorkerSignals | None = None
     ) -> dict:
-        """Process SDS files with error tracking."""
+        """Process SDS files with graceful stop support and error tracking."""
         from ...sds.processor import SDSProcessor
 
         processed_count = 0
         failed_count = 0
         failed_files = []
+        stopped_count = 0
 
         total = len(selected_files)
         processor = SDSProcessor()
@@ -587,8 +592,10 @@ class SDSProcessingTab(BaseTab):
         logger.debug(f"_process_sds_task started: signals={signals is not None}, total_files={total}")
 
         for i, file_path in enumerate(selected_files):
+            # Check if stop was requested BEFORE processing file
             if not self._processing:
-                logger.debug("Processing stopped by user")
+                logger.info(f"Processing stopped by user after {processed_count} files. Stopping at {file_path.name}")
+                stopped_count = total - i  # Remaining files
                 break
 
             try:
@@ -606,6 +613,7 @@ class SDSProcessingTab(BaseTab):
                         )
 
                 # Attempt to process the file using SDSProcessor with force_reprocess flag
+                logger.info(f"Processing file {i+1}/{total}: {file_path.name}")
                 result = processor.process(
                     file_path=file_path,
                     use_rag=use_rag,
@@ -615,6 +623,7 @@ class SDSProcessingTab(BaseTab):
 
                 if result and result.extractions:
                     processed_count += 1
+                    self._processed_count = processed_count  # Track for stop handler
                     # Remove from failed list if it was there
                     if file_path.name in self.failed_files:
                         del self.failed_files[file_path.name]
@@ -637,6 +646,7 @@ class SDSProcessingTab(BaseTab):
                 timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
                 self.failed_files[file_path.name] = timestamp
                 failed_files.append(f"{file_path.name} ({str(e)})")
+                logger.error(f"Failed to process {file_path.name}: {str(e)}")
 
                 # Emit failure signal for UI update
                 if signals:
@@ -652,17 +662,27 @@ class SDSProcessingTab(BaseTab):
                 else:
                     logger.warning(f"Signals is None! Cannot emit failure for {file_path.name}")
 
-        if signals:
-            signals.progress.emit(100, f"Complete: {processed_count} processed, {failed_count} failed")
-            logger.debug(f"Processing complete: {processed_count} succeeded, {failed_count} failed")
+        # Generate final message
+        if stopped_count > 0:
+            message = f"Stopped by user: {processed_count} processed, {failed_count} failed, {stopped_count} skipped"
+            if signals:
+                signals.progress.emit(
+                    int((processed_count / total) * 100) if total > 0 else 0,
+                    message
+                )
+            logger.info(f"Processing halted: {message}")
         else:
-            logger.warning("Signals is None at end of processing")
+            message = f"Complete: {processed_count} processed, {failed_count} failed"
+            if signals:
+                signals.progress.emit(100, message)
+            logger.debug(f"Processing complete: {processed_count} succeeded, {failed_count} failed")
 
         return {
             "processed": processed_count,
             "failed": failed_count,
+            "stopped": stopped_count,
             "failed_files": failed_files,
-            "message": f"Processed {processed_count} files, {failed_count} failed"
+            "message": message
         }
 
     def _on_batch_progress(self, progress: int, message: str) -> None:
@@ -726,30 +746,52 @@ class SDSProcessingTab(BaseTab):
             logger.warning(f"Could not find row for file: {filename} (searched {row_count} rows)")
 
     def _on_batch_done(self, result: object) -> None:
-        """Handle batch processing completion."""
+        """Handle batch processing completion (including graceful stop)."""
         self._processing = False
         self.process_btn.setEnabled(True)
         self.stop_btn.setEnabled(False)
         if isinstance(result, dict):
             processed = result.get('processed', 0)
             failed = result.get('failed', 0)
-            msg = f"Completed: {processed} processed, {failed} failed"
-            self._set_status(msg, error=(failed > 0))
-            
+            stopped = result.get('stopped', 0)
+
+            # Build status message
+            if stopped > 0:
+                msg = f"Stopped: {processed} processed, {failed} failed, {stopped} skipped"
+                self._set_status(msg, error=True)
+                logger.warning(f"Batch processing stopped by user: {msg}")
+            else:
+                msg = f"Completed: {processed} processed, {failed} failed"
+                self._set_status(msg, error=(failed > 0))
+                logger.info(f"Batch processing completed: {msg}")
+
             # Show detailed error for failed files
             if failed > 0 and 'failed_files' in result:
                 error_details = "\n".join(result['failed_files'][:5])  # Show first 5
                 if len(result['failed_files']) > 5:
                     error_details += f"\n... and {len(result['failed_files']) - 5} more"
                 print(f"Failed files:\n{error_details}")
+
+        # Reload folder contents to show final status
         self._load_folder_contents()
 
     def _on_stop_processing(self) -> None:
-        """Handle processing stop."""
-        self._processing = False
-        self.process_btn.setEnabled(True)
-        self.stop_btn.setEnabled(False)
-        self._set_status("Processing stopped by user")
+        """Handle processing stop request.
+
+        Gracefully halts processing by setting flag. The worker thread checks
+        self._processing at the start of each file iteration and breaks the loop
+        when False. Already-processed files' data is committed to the database
+        by the processor.process() method which calls update_document_status().
+        """
+        if not self._processing:
+            self._set_status("Processing is not running", error=True)
+            return
+
+        logger.info(f"Stop requested by user (after {self._processed_count} files processed)")
+        self._processing = False  # Signal worker thread to stop after current file
+        self.stop_btn.setEnabled(False)  # Disable button to prevent multiple clicks
+        self._set_status("Stopping processing… (waiting for current file to complete)")
+        logger.debug("Stop flag set, worker thread will stop at next iteration")
 
     def _on_build_matrix(self) -> None:
         """Handle matrix building."""
