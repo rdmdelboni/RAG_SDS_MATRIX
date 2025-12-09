@@ -34,11 +34,10 @@ from .tabs.records_tab import RecordsTab
 from .tabs.review_tab import ReviewTab
 from .tabs.status_tab import StatusTab
 from .tabs.chat_tab import ChatTab
-from .tabs.regex_lab_tab import RegexLabTab
 from .tabs.automation_tab import AutomationTab
 from .tabs.graph_tab import GraphTab
 from .tabs.rag_tab import RAGTab
-from .tabs.sds_tab import SDSTab
+from .tabs.rag_visualization_tab import RAGVisualizationTab
 from .tabs.sds_processing_tab import SDSProcessingTab
 
 logger = get_logger(__name__)
@@ -162,7 +161,7 @@ class MainWindow(QtWidgets.QMainWindow):
 
         # Instantiate all tabs with TabContext
         self.rag_tab = RAGTab(tab_context)
-        self.sds_tab = SDSTab(tab_context)
+        self.rag_visualization_tab = RAGVisualizationTab(tab_context)
         self.sds_processing_tab = SDSProcessingTab(tab_context)  # New unified tab
         self.records_tab = RecordsTab(tab_context)
         self.review_tab = ReviewTab(tab_context)
@@ -170,13 +169,12 @@ class MainWindow(QtWidgets.QMainWindow):
         self.status_tab = StatusTab(tab_context)
         self.chat_tab = ChatTab(tab_context)
         self.automation_tab = AutomationTab(tab_context)
-        self.regex_lab_tab = RegexLabTab(tab_context)
         self.graph_tab = GraphTab(tab_context)
 
         # Add tabs to tab widget
         self.tabs.addTab(self.rag_tab, "RAG")
+        self.tabs.addTab(self.rag_visualization_tab, "📊 RAG Visualizations")
         self.tabs.addTab(self.sds_processing_tab, "🔬 SDS Processing")  # New unified tab
-        self.tabs.addTab(self.sds_tab, "SDS (Legacy)")
         self.tabs.addTab(self.records_tab, "Records")
         self.tabs.addTab(self.review_tab, "Review")
         self.tabs.addTab(self.backup_tab, "Backup")
@@ -184,7 +182,6 @@ class MainWindow(QtWidgets.QMainWindow):
         self.tabs.addTab(self.chat_tab, "Chat")
         self.tabs.addTab(self.automation_tab, "Automation")
         self.tabs.addTab(self.graph_tab, "🕸️ Graph")
-        self.tabs.addTab(self.regex_lab_tab, "Regex Lab (Legacy)")
 
         self.status_bar = self.statusBar()
         self.status_label = QtWidgets.QLabel(get_text("app.ready"))
