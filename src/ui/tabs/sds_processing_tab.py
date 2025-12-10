@@ -593,8 +593,10 @@ class SDSProcessingTab(BaseTab):
 
         for i, file_path in enumerate(selected_files):
             # Check if stop was requested BEFORE processing file
+            logger.debug(f"File {i+1}/{total}: Checking stop flag (self._processing={self._processing})")
             if not self._processing:
-                logger.info(f"Processing stopped by user after {processed_count} files. Stopping at {file_path.name}")
+                logger.warning(f"!!! STOP DETECTED !!! Processing stopped by user after {processed_count} files")
+                logger.warning(f"!!! STOP: Breaking at file {i+1}/{total}: {file_path.name}")
                 stopped_count = total - i  # Remaining files
                 break
 
@@ -626,14 +628,15 @@ class SDSProcessingTab(BaseTab):
 
                 # Check stop flag again after processing completes
                 # (user may have clicked stop while this file was being processed)
+                logger.debug(f"File {i+1}/{total} completed. Checking stop flag (self._processing={self._processing})")
                 if not self._processing:
-                    logger.info(f"Stop requested detected after processing {file_path.name}")
+                    logger.warning(f"!!! STOP DETECTED AFTER PROCESSING !!! Stop flag detected after {file_path.name} completed")
                     if result and result.extractions:
                         # File was already processed, commit it
                         processed_count += 1
                         self._processed_count = processed_count
                         if signals:
-                            logger.debug(f"Committing processed file {file_path.name} before stopping")
+                            logger.warning(f"!!! STOP: Committing processed file {file_path.name} before stopping")
                             signals.data.emit({
                                 'type': 'file_processed',
                                 'filename': file_path.name,
@@ -641,7 +644,7 @@ class SDSProcessingTab(BaseTab):
                             })
                     # Now stop processing remaining files
                     stopped_count = total - (i + 1)
-                    logger.info(f"Halting after {processed_count} files. {stopped_count} files remaining.")
+                    logger.warning(f"!!! STOP: Halting after {processed_count} files. {stopped_count} files remaining.")
                     break
 
                 if result and result.extractions:
@@ -806,15 +809,25 @@ class SDSProcessingTab(BaseTab):
         when False. Already-processed files' data is committed to the database
         by the processor.process() method which calls update_document_status().
         """
+        logger.warning(f"=== STOP BUTTON CLICKED === (self._processing={self._processing})")
+
         if not self._processing:
+            logger.warning("Stop button clicked but processing is not running!")
             self._set_status("Processing is not running", error=True)
             return
 
-        logger.info(f"Stop requested by user (after {self._processed_count} files processed)")
+        logger.warning(f"STOP: Setting self._processing=False (currently True)")
+        logger.warning(f"STOP: Files processed so far: {self._processed_count}")
+
         self._processing = False  # Signal worker thread to stop after current file
+
+        logger.warning(f"STOP: Verification - self._processing is now: {self._processing}")
+        logger.warning(f"STOP: Disabling Stop button to prevent double-click")
+
         self.stop_btn.setEnabled(False)  # Disable button to prevent multiple clicks
         self._set_status("Stopping processing… (waiting for current file to complete)")
-        logger.debug("Stop flag set, worker thread will stop at next iteration")
+
+        logger.warning("=== STOP FLAG SET - Worker thread should stop at next check ===")
 
     def _on_build_matrix(self) -> None:
         """Handle matrix building."""
