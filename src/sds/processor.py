@@ -169,10 +169,15 @@ class SDSProcessor:
 
         try:
             # === PHASE 1: MULTI-PASS LOCAL EXTRACTION ===
+            phase1_start = time.time()
             logger.debug("Phase 1: Multi-pass local extraction starting")
 
             # Extract text and sections (with OCR progress callback)
+            ocr_start = time.time()
             extracted = self.extractor.extract_document(file_path, progress_callback=progress_callback)
+            ocr_time = time.time() - ocr_start
+            logger.info(f"⏱️ OCR extraction completed in {ocr_time:.2f}s")
+
             text = extracted["text"]
             sections = extracted.get("sections", {})
 
@@ -180,10 +185,15 @@ class SDSProcessor:
             profile = self.router.identify_profile(text)
 
             # PASS 1: Heuristics (fast, high-precision fields)
+            logger.info("Phase 1a: Running heuristics extraction")
             extractions = self._extraction_pass_heuristics(text, sections, profile)
 
             # PASS 2: LLM for uncertain/missing fields
+            llm_start = time.time()
+            logger.info("Phase 1b: Running LLM extraction (may take 10-30 seconds)...")
             extractions = self._extraction_pass_llm(extractions, text, sections)
+            llm_time = time.time() - llm_start
+            logger.info(f"⏱️ LLM extraction completed in {llm_time:.2f}s")
 
             # PASS 2.5: Defensive normalization of field entries
             extractions = self._defensive_normalize_extractions(extractions)
@@ -213,11 +223,14 @@ class SDSProcessor:
                 )
 
             # === PHASE 2: PUBCHEM ENRICHMENT ===
-            logger.debug("Phase 2: PubChem enrichment and validation")
+            pubchem_start = time.time()
+            logger.info("Phase 2: PubChem enrichment and validation (may take 5-10 seconds)...")
             pubchem_enrichments = self.pubchem_enricher.enrich_extraction(
                 extractions,
                 aggressive=False  # Conservative by default
             )
+            pubchem_time = time.time() - pubchem_start
+            logger.info(f"⏱️ PubChem enrichment completed in {pubchem_time:.2f}s")
             
             # Apply enrichments to extractions
             if pubchem_enrichments:
@@ -266,8 +279,10 @@ class SDSProcessor:
                         )
 
             # === PHASE 3: RAG FIELD COMPLETION (if needed) ===
+            rag_start = time.time()
             if use_rag and (is_dangerous or completeness < 0.8):
                 kb_stats = {}
+                logger.info("Phase 3: RAG field completion (may take 10-20 seconds)...")
                 try:
                     kb_stats = self.rag.get_knowledge_base_stats()
                 except Exception as exc:  # pragma: no cover - defensive logging
@@ -303,6 +318,11 @@ class SDSProcessor:
                         "Skipping RAG enrichment due to vector store error: %s",
                         kb_stats.get("error"),
                     )
+                rag_time = time.time() - rag_start
+                logger.info(f"⏱️ RAG enrichment completed in {rag_time:.2f}s")
+            else:
+                # RAG not used - still log the skipped phase
+                logger.debug("Phase 3: Skipping RAG enrichment (not dangerous and completeness >= 0.8)")
 
             # Update document status
             processing_time = time.time() - start_time
