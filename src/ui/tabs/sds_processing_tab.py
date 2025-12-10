@@ -7,6 +7,7 @@ providing a seamless workflow for testing extraction patterns and batch processi
 from __future__ import annotations
 
 import json
+import threading
 from datetime import datetime
 from pathlib import Path
 
@@ -32,8 +33,8 @@ class SDSProcessingTab(BaseTab):
         self.project_root = Path.cwd()
         self.selected_folder: Path | None = None
         self.last_folder_path: Path | None = None
-        self._processing = False
-        self._stop_requested = False  # Track if user requested stop
+        # Use threading.Event for thread-safe flag communication
+        self._processing_event = threading.Event()  # Set = processing active
         self._processed_count = 0  # Track files processed before stop
         self.failed_files: dict[str, str] = {}  # filename -> failure timestamp
         self._load_persistent_config()
@@ -555,8 +556,7 @@ class SDSProcessingTab(BaseTab):
             return
 
         self._set_status(f"Starting SDS processing ({len(selected_files)} files)…")
-        self._processing = True
-        self._stop_requested = False  # Reset stop flag at start
+        self._processing_event.set()  # Signal that processing is active (thread-safe)
         self._processed_count = 0  # Reset processed count
         self.process_btn.setEnabled(False)
         self.stop_btn.setEnabled(True)
@@ -592,9 +592,10 @@ class SDSProcessingTab(BaseTab):
         logger.debug(f"_process_sds_task started: signals={signals is not None}, total_files={total}")
 
         for i, file_path in enumerate(selected_files):
-            # Check if stop was requested BEFORE processing file
-            logger.debug(f"File {i+1}/{total}: Checking stop flag (self._processing={self._processing})")
-            if not self._processing:
+            # Check if stop was requested BEFORE processing file (thread-safe check)
+            is_processing = self._processing_event.is_set()
+            logger.debug(f"File {i+1}/{total}: Checking stop flag (is_processing={is_processing})")
+            if not is_processing:
                 logger.warning(f"!!! STOP DETECTED !!! Processing stopped by user after {processed_count} files")
                 logger.warning(f"!!! STOP: Breaking at file {i+1}/{total}: {file_path.name}")
                 stopped_count = total - i  # Remaining files
@@ -618,8 +619,8 @@ class SDSProcessingTab(BaseTab):
 
                 # Define OCR progress callback to emit detailed status and check stop flag
                 def ocr_progress(current_page: int, total_pages: int, message: str):
-                    # Check stop flag even during long-running OCR
-                    if not self._processing:
+                    # Check stop flag even during long-running OCR (thread-safe)
+                    if not self._processing_event.is_set():
                         logger.warning(f"Stop requested during OCR of {file_path.name} (page {current_page}/{total_pages})")
                     if signals:
                         signals.progress.emit(
@@ -636,10 +637,11 @@ class SDSProcessingTab(BaseTab):
                     progress_callback=ocr_progress
                 )
 
-                # Check stop flag again after processing completes
+                # Check stop flag again after processing completes (thread-safe)
                 # (user may have clicked stop while this file was being processed)
-                logger.debug(f"File {i+1}/{total} completed. Checking stop flag (self._processing={self._processing})")
-                if not self._processing:
+                is_processing = self._processing_event.is_set()
+                logger.debug(f"File {i+1}/{total} completed. Checking stop flag (is_processing={is_processing})")
+                if not is_processing:
                     logger.warning(f"!!! STOP DETECTED AFTER PROCESSING !!! Stop flag detected after {file_path.name} completed")
                     if result and result.extractions:
                         # File was already processed, commit it
@@ -805,7 +807,7 @@ class SDSProcessingTab(BaseTab):
 
     def _on_batch_done(self, result: object) -> None:
         """Handle batch processing completion (including graceful stop)."""
-        self._processing = False
+        self._processing_event.clear()  # Clear the processing event when done
         self.process_btn.setEnabled(True)
         self.stop_btn.setEnabled(False)
         if isinstance(result, dict):
@@ -834,32 +836,33 @@ class SDSProcessingTab(BaseTab):
         self._load_folder_contents()
 
     def _on_stop_processing(self) -> None:
-        """Handle processing stop request.
+        """Handle processing stop request using thread-safe Event.
 
-        Gracefully halts processing by setting flag. The worker thread checks
-        self._processing at the start of each file iteration and breaks the loop
-        when False. Already-processed files' data is committed to the database
-        by the processor.process() method which calls update_document_status().
+        Clears the processing event to signal the worker thread to stop.
+        The worker thread checks is_set() at the start of each file iteration
+        and breaks the loop when cleared. Already-processed files' data is
+        committed to the database by the processor.process() method.
         """
-        logger.warning(f"=== STOP BUTTON CLICKED === (self._processing={self._processing})")
+        is_processing = self._processing_event.is_set()
+        logger.warning(f"=== STOP BUTTON CLICKED === (is_processing={is_processing})")
 
-        if not self._processing:
+        if not is_processing:
             logger.warning("Stop button clicked but processing is not running!")
             self._set_status("Processing is not running", error=True)
             return
 
-        logger.warning(f"STOP: Setting self._processing=False (currently True)")
+        logger.warning(f"STOP: Clearing processing event (thread-safe signal)")
         logger.warning(f"STOP: Files processed so far: {self._processed_count}")
 
-        self._processing = False  # Signal worker thread to stop after current file
+        self._processing_event.clear()  # Signal worker thread to stop (thread-safe)
 
-        logger.warning(f"STOP: Verification - self._processing is now: {self._processing}")
+        logger.warning(f"STOP: Verification - is_set={self._processing_event.is_set()}")
         logger.warning(f"STOP: Disabling Stop button to prevent double-click")
 
         self.stop_btn.setEnabled(False)  # Disable button to prevent multiple clicks
         self._set_status("Stopping processing… (waiting for current file to complete)")
 
-        logger.warning("=== STOP FLAG SET - Worker thread should stop at next check ===")
+        logger.warning("=== STOP EVENT CLEARED - Worker thread should stop at next check ===")
 
     def _on_build_matrix(self) -> None:
         """Handle matrix building."""
