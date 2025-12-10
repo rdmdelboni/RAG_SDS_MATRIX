@@ -606,6 +606,16 @@ class SDSProcessingTab(BaseTab):
                     signals.progress.emit(progress, f"Processing {file_path.name} ({i+1}/{total})...")
                     logger.debug(f"Emitted progress: {progress}% - {file_path.name}")
 
+                # Emit signal that processing started for this file (real-time UI update)
+                start_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                if signals:
+                    logger.debug(f"Emitting file_processing_started signal for {file_path.name}")
+                    signals.data.emit({
+                        'type': 'file_processing_started',
+                        'filename': file_path.name,
+                        'start_time': start_time
+                    })
+
                 # Define OCR progress callback to emit detailed status and check stop flag
                 def ocr_progress(current_page: int, total_pages: int, message: str):
                     # Check stop flag even during long-running OCR
@@ -718,16 +728,18 @@ class SDSProcessingTab(BaseTab):
         self._set_status(message)
 
     def _on_file_processed(self, data: dict) -> None:
-        """Handle individual file processing completion (real-time UI update)."""
-        if data.get('type') != 'file_processed':
-            logger.debug(f"Ignoring data signal with type: {data.get('type')}")
-            return
+        """Handle individual file processing status updates (real-time UI update).
 
+        Handles three types of status updates:
+        1. 'file_processing_started' - File processing has started
+        2. 'file_processed' with success=True - File successfully processed
+        3. 'file_processed' with success=False - File processing failed
+        """
+        data_type = data.get('type')
         filename = data.get('filename')
-        success = data.get('success', False)
-        logger.debug(f"_on_file_processed called: filename={filename}, success={success}")
+        logger.debug(f"_on_file_processed called: type={data_type}, filename={filename}")
 
-        # Find the row with this filename and update its status
+        # Find the row with this filename
         row_count = self.batch_table.rowCount()
         logger.debug(f"Searching for {filename} in batch_table with {row_count} rows")
 
@@ -736,34 +748,54 @@ class SDSProcessingTab(BaseTab):
             file_item = self.batch_table.item(idx, 1)
             if file_item:
                 # Check if this is the file (with or without markers)
-                item_text = file_item.text().replace("✓ ", "").replace("❌ ", "")
+                item_text = file_item.text().replace("✓ ", "").replace("❌ ", "").replace("⏳ ", "")
                 logger.debug(f"Row {idx}: checking item_text='{item_text}' against filename='{filename}'")
 
                 if item_text == filename:
                     found = True
                     logger.debug(f"Found matching row {idx} for {filename}")
 
-                    if success:
-                        # Update to success
-                        file_item.setText(f"✓ {filename}")
-                        file_item.setForeground(QtGui.QColor(self.colors.get("success", "#a6e3a1")))
+                    status_item = self.batch_table.item(idx, 3)
 
-                        status_item = self.batch_table.item(idx, 3)
-                        if status_item:
-                            status_item.setText("✓ Processed")
-                            status_item.setForeground(QtGui.QColor(self.colors.get("success", "#a6e3a1")))
-                            logger.debug(f"Updated row {idx} status to success")
-                    else:
-                        # Update to failed
-                        file_item.setText(f"❌ {filename}")
-                        file_item.setForeground(QtGui.QColor(self.colors.get("error", "#f38ba8")))
+                    # Handle different status types
+                    if data_type == 'file_processing_started':
+                        # File processing has started - show timestamp
+                        start_time = data.get('start_time', datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
 
-                        timestamp = data.get('timestamp', datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
-                        status_item = self.batch_table.item(idx, 3)
+                        # Update file item to show processing indicator
+                        file_item.setText(f"⏳ {filename}")
+                        file_item.setForeground(QtGui.QColor(self.colors.get("text", "#ffffff")))
+
+                        # Update status to show processing started time
                         if status_item:
-                            status_item.setText(f"❌ Process attempt failed on {timestamp}")
-                            status_item.setForeground(QtGui.QColor(self.colors.get("error", "#f38ba8")))
-                            logger.debug(f"Updated row {idx} status to failed")
+                            status_item.setText(f"⏳ Processing started at {start_time}")
+                            status_item.setForeground(QtGui.QColor(self.colors.get("text", "#ffffff")))
+                            logger.debug(f"Updated row {idx} status to: Processing started at {start_time}")
+
+                    elif data_type == 'file_processed':
+                        success = data.get('success', False)
+
+                        if success:
+                            # Update to success
+                            file_item.setText(f"✓ {filename}")
+                            file_item.setForeground(QtGui.QColor(self.colors.get("success", "#a6e3a1")))
+
+                            if status_item:
+                                status_item.setText("✓ Processed")
+                                status_item.setForeground(QtGui.QColor(self.colors.get("success", "#a6e3a1")))
+                                logger.debug(f"Updated row {idx} status to success")
+                        else:
+                            # Update to failed
+                            file_item.setText(f"❌ {filename}")
+                            file_item.setForeground(QtGui.QColor(self.colors.get("error", "#f38ba8")))
+
+                            timestamp = data.get('timestamp', datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
+                            if status_item:
+                                error_msg = data.get('error', 'Unknown error')
+                                status_item.setText(f"❌ Failed on {timestamp}: {error_msg[:50]}")
+                                status_item.setForeground(QtGui.QColor(self.colors.get("error", "#f38ba8")))
+                                logger.debug(f"Updated row {idx} status to failed")
+
                     break
             else:
                 logger.debug(f"Row {idx}: file_item is None")
