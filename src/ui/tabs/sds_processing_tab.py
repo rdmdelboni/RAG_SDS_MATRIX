@@ -424,22 +424,32 @@ class SDSProcessingTab(BaseTab):
         self.batch_table.clearContents()
         self.batch_table.setRowCount(len(files))
 
-        # Get processed files metadata
+        # Get processed files metadata with timestamps
         try:
             processed_metadata = self.context.db.get_processed_files_metadata()
             processed_names = {name for (name, _size) in processed_metadata.keys()}
+            processed_timestamps = self.context.db.get_processed_files_with_timestamps()
         except Exception:
             processed_names = set()
+            processed_timestamps = {}
 
         for idx, file_path in enumerate(files):
             is_processed = file_path.name in processed_names
             is_failed = file_path.name in self.failed_files
 
-            # Column 0: Checkbox
+            # Column 0: Checkbox (centered)
             checkbox = QtWidgets.QCheckBox()
             checkbox.setChecked(True)
             self._style_checkbox_symbols(checkbox, font_size=16, spacing=0)
-            self.batch_table.setCellWidget(idx, 0, checkbox)
+            
+            # Create a container widget to center the checkbox
+            checkbox_container = QtWidgets.QWidget()
+            checkbox_layout = QtWidgets.QHBoxLayout(checkbox_container)
+            checkbox_layout.setContentsMargins(0, 0, 0, 0)
+            checkbox_layout.setAlignment(QtCore.Qt.AlignmentFlag.AlignCenter)
+            checkbox_layout.addWidget(checkbox)
+            
+            self.batch_table.setCellWidget(idx, 0, checkbox_container)
 
             # Column 1: File name
             if is_failed:
@@ -453,25 +463,42 @@ class SDSProcessingTab(BaseTab):
             else:
                 file_item = QtWidgets.QTableWidgetItem(file_path.name)
             
+            # Make read-only
+            file_item.setFlags(file_item.flags() & ~QtCore.Qt.ItemFlag.ItemIsEditable)
             # Store full path for robust retrieval
             file_item.setData(QtCore.Qt.ItemDataRole.UserRole, str(file_path))
             self.batch_table.setItem(idx, 1, file_item)
 
             # Column 2: Chemical (placeholder)
-            self.batch_table.setItem(idx, 2, QtWidgets.QTableWidgetItem(""))
+            chemical_item = QtWidgets.QTableWidgetItem("")
+            chemical_item.setFlags(chemical_item.flags() & ~QtCore.Qt.ItemFlag.ItemIsEditable)  # Make read-only
+            self.batch_table.setItem(idx, 2, chemical_item)
 
             # Column 3: Status
             if is_failed:
                 status_text = f"❌ Process attempt failed on {self.failed_files[file_path.name]}"
                 status_color = self.colors.get("error", "#f38ba8")
             elif is_processed:
-                status_text = "✓ Processed" if not self.process_all_checkbox.isChecked() else "↻ Will reprocess"
-                status_color = self.colors.get("success", "#a6e3a1") if not self.process_all_checkbox.isChecked() else self.colors.get("warning", "#f9e2af")
+                timestamp = processed_timestamps.get(file_path.name, "")
+                if timestamp:
+                    if self.process_all_checkbox.isChecked():
+                        status_text = f"↻ Will reprocess (Processed at {timestamp})"
+                        status_color = self.colors.get("warning", "#f9e2af")
+                    else:
+                        status_text = f"✓ Processed at {timestamp}"
+                        status_color = self.colors.get("success", "#a6e3a1")
+                else:
+                    status_text = "✓ Processed" if not self.process_all_checkbox.isChecked() else "↻ Will reprocess"
+                    status_color = self.colors.get("success", "#a6e3a1") if not self.process_all_checkbox.isChecked() else self.colors.get("warning", "#f9e2af")
             else:
                 status_text = "⏳ Pending"
                 status_color = self.colors.get("text", "#ffffff")
             status_item = QtWidgets.QTableWidgetItem(status_text)
+            # Store the timestamp in UserRole for later reference
+            timestamp = processed_timestamps.get(file_path.name, "")
+            status_item.setData(QtCore.Qt.ItemDataRole.UserRole, timestamp)
             status_item.setForeground(QtGui.QColor(status_color))
+            status_item.setFlags(status_item.flags() & ~QtCore.Qt.ItemFlag.ItemIsEditable)  # Make read-only
             self.batch_table.setItem(idx, 3, status_item)
 
         self.batch_table.resizeColumnsToContents()
@@ -495,13 +522,22 @@ class SDSProcessingTab(BaseTab):
                 # Check if file is processed (has ✓ marker)
                 is_processed = file_item.text().startswith("✓ ")
                 
-                if is_processed and status_item.text().startswith("✓ "):
-                    # Update status text only
+                if is_processed:
+                    # Get timestamp from UserRole
+                    timestamp = status_item.data(QtCore.Qt.ItemDataRole.UserRole) or ""
+                    
+                    # Update status text based on reprocess checkbox
                     if state == QtCore.Qt.CheckState.Checked:
-                        status_item.setText("↻ Will reprocess")
+                        if timestamp:
+                            status_item.setText(f"↻ Will reprocess (Processed at {timestamp})")
+                        else:
+                            status_item.setText("↻ Will reprocess")
                         status_item.setForeground(QtGui.QColor(self.colors.get("warning", "#f9e2af")))
                     else:
-                        status_item.setText("✓ Processed")
+                        if timestamp:
+                            status_item.setText(f"✓ Processed at {timestamp}")
+                        else:
+                            status_item.setText("✓ Processed")
                         status_item.setForeground(QtGui.QColor(self.colors.get("success", "#a6e3a1")))
 
 
@@ -517,7 +553,18 @@ class SDSProcessingTab(BaseTab):
         logger.info(f"Scanning {row_count} rows for selection...")
 
         for idx in range(row_count):
-            checkbox = self.batch_table.cellWidget(idx, 0)
+            checkbox_widget = self.batch_table.cellWidget(idx, 0)
+            checkbox = None
+            
+            # If it's a container, get the checkbox from it
+            if checkbox_widget:
+                if isinstance(checkbox_widget, QtWidgets.QCheckBox):
+                    checkbox = checkbox_widget
+                elif isinstance(checkbox_widget, QtWidgets.QWidget):
+                    layout = checkbox_widget.layout()
+                    if layout and layout.count() > 0:
+                        checkbox = layout.itemAt(0).widget()
+            
             if checkbox and isinstance(checkbox, QtWidgets.QCheckBox):
                 if checkbox.isChecked():
                     file_item = self.batch_table.item(idx, 1)
@@ -778,14 +825,21 @@ class SDSProcessingTab(BaseTab):
                         success = data.get('success', False)
 
                         if success:
-                            # Update to success
+                            # Update to success with timestamp
                             file_item.setText(f"✓ {filename}")
                             file_item.setForeground(QtGui.QColor(self.colors.get("success", "#a6e3a1")))
 
                             if status_item:
-                                status_item.setText("✓ Processed")
-                                status_item.setForeground(QtGui.QColor(self.colors.get("success", "#a6e3a1")))
-                                logger.debug(f"Updated row {idx} status to success")
+                                timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                                if self.process_all_checkbox.isChecked():
+                                    status_item.setText(f"↻ Will reprocess (Processed at {timestamp})")
+                                    status_item.setForeground(QtGui.QColor(self.colors.get("warning", "#f9e2af")))
+                                else:
+                                    status_item.setText(f"✓ Processed at {timestamp}")
+                                    status_item.setForeground(QtGui.QColor(self.colors.get("success", "#a6e3a1")))
+                                # Store timestamp in UserRole for later reference
+                                status_item.setData(QtCore.Qt.ItemDataRole.UserRole, timestamp)
+                                logger.debug(f"Updated row {idx} status to success with timestamp {timestamp}")
                         else:
                             # Update to failed
                             file_item.setText(f"❌ {filename}")
@@ -928,7 +982,18 @@ class SDSProcessingTab(BaseTab):
     def _on_select_all_files(self) -> None:
         """Select all files in the table."""
         for idx in range(self.batch_table.rowCount()):
-            checkbox = self.batch_table.cellWidget(idx, 0)
+            checkbox_widget = self.batch_table.cellWidget(idx, 0)
+            checkbox = None
+            
+            # If it's a container, get the checkbox from it
+            if checkbox_widget:
+                if isinstance(checkbox_widget, QtWidgets.QCheckBox):
+                    checkbox = checkbox_widget
+                elif isinstance(checkbox_widget, QtWidgets.QWidget):
+                    layout = checkbox_widget.layout()
+                    if layout and layout.count() > 0:
+                        checkbox = layout.itemAt(0).widget()
+            
             if checkbox and isinstance(checkbox, QtWidgets.QCheckBox):
                 checkbox.setChecked(True)
         self._set_status("Selected all files")
@@ -936,7 +1001,18 @@ class SDSProcessingTab(BaseTab):
     def _on_unselect_all_files(self) -> None:
         """Unselect all files in the table."""
         for idx in range(self.batch_table.rowCount()):
-            checkbox = self.batch_table.cellWidget(idx, 0)
+            checkbox_widget = self.batch_table.cellWidget(idx, 0)
+            checkbox = None
+            
+            # If it's a container, get the checkbox from it
+            if checkbox_widget:
+                if isinstance(checkbox_widget, QtWidgets.QCheckBox):
+                    checkbox = checkbox_widget
+                elif isinstance(checkbox_widget, QtWidgets.QWidget):
+                    layout = checkbox_widget.layout()
+                    if layout and layout.count() > 0:
+                        checkbox = layout.itemAt(0).widget()
+            
             if checkbox and isinstance(checkbox, QtWidgets.QCheckBox):
                 checkbox.setChecked(False)
         self._set_status("Unselected all files")
@@ -946,7 +1022,18 @@ class SDSProcessingTab(BaseTab):
         for idx in range(self.batch_table.rowCount()):
             name_item = self.batch_table.item(idx, 1)
             is_processed = name_item and name_item.text().startswith("✓ ")
-            checkbox = self.batch_table.cellWidget(idx, 0)
+            checkbox_widget = self.batch_table.cellWidget(idx, 0)
+            checkbox = None
+            
+            # If it's a container, get the checkbox from it
+            if checkbox_widget:
+                if isinstance(checkbox_widget, QtWidgets.QCheckBox):
+                    checkbox = checkbox_widget
+                elif isinstance(checkbox_widget, QtWidgets.QWidget):
+                    layout = checkbox_widget.layout()
+                    if layout and layout.count() > 0:
+                        checkbox = layout.itemAt(0).widget()
+            
             if checkbox and isinstance(checkbox, QtWidgets.QCheckBox):
                 checkbox.setChecked(not is_processed)
         self._set_status("Selected pending files")
@@ -1076,6 +1163,12 @@ class SDSProcessingTab(BaseTab):
             conf_item = QtWidgets.QTableWidgetItem(row["confidence"])
             conf_item.setForeground(color)
             source_item = QtWidgets.QTableWidgetItem(row["source"])
+            
+            # Make all items read-only (editing only allowed in Review tab)
+            field_item.setFlags(field_item.flags() & ~QtCore.Qt.ItemFlag.ItemIsEditable)
+            value_item.setFlags(value_item.flags() & ~QtCore.Qt.ItemFlag.ItemIsEditable)
+            conf_item.setFlags(conf_item.flags() & ~QtCore.Qt.ItemFlag.ItemIsEditable)
+            source_item.setFlags(source_item.flags() & ~QtCore.Qt.ItemFlag.ItemIsEditable)
 
             self.test_table.setItem(r, 0, field_item)
             self.test_table.setItem(r, 1, value_item)

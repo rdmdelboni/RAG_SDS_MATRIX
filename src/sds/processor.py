@@ -209,18 +209,20 @@ class SDSProcessor:
             hazard_class = extractions.get("hazard_class", {}).get("value")
             is_dangerous = self.validator.is_dangerous(hazard_class)
 
-            # Store Phase 1 results
-            for field_name, result in extractions.items():
-                self.db.store_extraction(
-                    document_id=doc_id,
-                    field_name=field_name,
-                    value=result.get("value", ""),
-                    confidence=result.get("confidence", 0.0),
-                    context=result.get("context", ""),
-                    validation_status=result.get("validation_status", "pending"),
-                    validation_message=result.get("validation_message"),
-                    source=result.get("source", "heuristic"),
+            # Store Phase 1 results using batch insert (faster than individual stores)
+            extraction_batch = [
+                (
+                    field_name,
+                    result.get("value", ""),
+                    result.get("confidence", 0.0),
+                    result.get("context", ""),
+                    result.get("validation_status", "pending"),
+                    result.get("validation_message"),
+                    result.get("source", "heuristic"),
                 )
+                for field_name, result in extractions.items()
+            ]
+            self.db.store_extractions_batch(doc_id, extraction_batch)
 
             # === PHASE 2: PUBCHEM ENRICHMENT ===
             pubchem_start = time.time()
@@ -264,19 +266,22 @@ class SDSProcessor:
                             extractions[field_name]["validation_status"] = "warning"
                             extractions[field_name]["pubchem_issues"] = enrichment.issues
                 
-                # Store enrichment metadata
-                for field_name, enrichment in pubchem_enrichments.items():
-                    if enrichment.enriched_value:
-                        self.db.store_extraction(
-                            document_id=doc_id,
-                            field_name=field_name,
-                            value=enrichment.enriched_value,
-                            confidence=enrichment.confidence,
-                            context="PubChem enrichment",
-                            validation_status=enrichment.validation_status,
-                            validation_message="; ".join(enrichment.issues) if enrichment.issues else None,
-                            source="pubchem",
-                        )
+                # Store enrichment metadata using batch insert
+                enrichment_batch = [
+                    (
+                        field_name,
+                        enrichment.enriched_value,
+                        enrichment.confidence,
+                        "PubChem enrichment",
+                        enrichment.validation_status,
+                        "; ".join(enrichment.issues) if enrichment.issues else None,
+                        "pubchem",
+                    )
+                    for field_name, enrichment in pubchem_enrichments.items()
+                    if enrichment.enriched_value
+                ]
+                if enrichment_batch:
+                    self.db.store_extractions_batch(doc_id, enrichment_batch)
 
             # === PHASE 3: RAG FIELD COMPLETION (if needed) ===
             rag_start = time.time()

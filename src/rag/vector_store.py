@@ -60,25 +60,43 @@ class VectorStore:
 
     @property
     def embeddings(self):
-        """Get embeddings (lazy initialization)."""
+        """Get embeddings (lazy initialization with graceful fallback)."""
         if not self._embeddings_initialized:
             try:
                 self._embeddings = self.ollama.get_embeddings()
+                if self._embeddings is None:
+                    logger.warning(
+                        "Embeddings model unavailable. RAG features disabled. "
+                        "Pull an embedding model: ollama pull nomic-embed-text"
+                    )
                 self._embeddings_initialized = True
             except Exception as e:
-                logger.error("Failed to initialize embeddings: %s", e)
+                logger.warning("Failed to initialize embeddings (continuing without RAG): %s", e)
+                self._embeddings = None
                 self._embeddings_initialized = True
         return self._embeddings
 
     @property
     def db(self) -> Chroma:
-        """Get or create ChromaDB instance (lazy initialization)."""
+        """Get or create ChromaDB instance (lazy initialization with graceful fallback)."""
         if self._db is None:
-            self._db = Chroma(
-                collection_name=self.COLLECTION_NAME,
-                embedding_function=self.embeddings,
-                persist_directory=str(self.persist_directory),
-            )
+            try:
+                embeddings_func = self.embeddings
+                if embeddings_func is None:
+                    logger.warning(
+                        "ChromaDB will be created without embeddings. "
+                        "RAG features will not be available."
+                    )
+                self._db = Chroma(
+                    collection_name=self.COLLECTION_NAME,
+                    embedding_function=embeddings_func,
+                    persist_directory=str(self.persist_directory),
+                )
+            except Exception as e:
+                logger.error(
+                    "Failed to initialize ChromaDB: %s. RAG features will be unavailable.", e
+                )
+                self._db = None
         return self._db
 
     # === Health/Readiness ===
@@ -89,14 +107,22 @@ class VectorStore:
         Returns:
             True if ready, False otherwise (after attempting re-init)
         """
+        # If embeddings are disabled, vector store is not ready
+        if self.embeddings is None:
+            return False
+            
         try:
             # Try a lightweight call to ensure the collection is accessible
+            if self.db is None:
+                return False
             _ = self.db._collection.count()  # type: ignore[attr-defined]
             return True
         except Exception as e:
             logger.warning("Vector store not ready, reinitializing: %s", e)
             self._db = None
             try:
+                if self.db is None:
+                    return False
                 _ = self.db._collection.count()  # type: ignore[attr-defined]
                 logger.info("Vector store reinitialized successfully")
                 return True
@@ -123,6 +149,14 @@ class VectorStore:
         if not documents:
             return 0
 
+        # Check if embeddings are available
+        if self.embeddings is None:
+            logger.warning(
+                "Cannot index documents: embeddings model unavailable. "
+                "RAG features disabled. Skipping vectorization."
+            )
+            return 0
+
         total_added = 0
 
         # Process in batches to avoid memory issues
@@ -142,7 +176,9 @@ class VectorStore:
                 )
             except Exception as e:
                 logger.error("Failed to add batch starting at %d: %s", i, e)
-                raise
+                # Log but don't raise - allow processing to continue without RAG
+                logger.warning("Skipping RAG indexing for this batch due to error")
+                break
 
         logger.info("Added %d documents to vector store", total_added)
         return total_added
@@ -194,11 +230,12 @@ class VectorStore:
             filter_metadata: Optional metadata filter
 
         Returns:
-            List of SearchResult objects
+            List of SearchResult objects (empty list if embeddings unavailable)
         """
         try:
             if not self.ensure_ready():
-                raise RuntimeError("vector store unavailable")
+                logger.warning("Vector store unavailable, returning empty results")
+                return []
             # Use similarity search with scores
             results = self.db.similarity_search_with_relevance_scores(
                 query=query,

@@ -8,6 +8,8 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from typing import Optional, Dict, Any, List
 import requests
+from requests.adapters import HTTPAdapter
+from urllib3.util.retry import Retry
 import re
 
 from ..utils.logger import get_logger
@@ -159,7 +161,23 @@ class PubChemClient:
         self._fixtures_by_cas = {
             data["CAS"]: {**data} for data in self.OFFLINE_FIXTURES.values()
         }
-        logger.info(f"PubChem client initialized with {cache_ttl}s cache TTL")
+        
+        # Create persistent session with connection pooling for faster requests
+        self._session = requests.Session()
+        adapter = HTTPAdapter(
+            pool_connections=3,      # Number of connection pools to cache
+            pool_maxsize=3,           # Maximum number of connections per pool
+            max_retries=Retry(
+                total=3,
+                backoff_factor=0.5,
+                status_forcelist=[500, 502, 503, 504]
+            )
+        )
+        self._session.mount('https://', adapter)
+        self._session.mount('http://', adapter)
+        
+        logger.info(f"PubChem client initialized with {cache_ttl}s cache TTL and connection pooling")
+
     
     def _rate_limit(self):
         """Enforce rate limiting to respect PubChem usage policy (5 req/s max)."""
@@ -176,7 +194,10 @@ class PubChemClient:
         apply_rate_limit: bool = True,
         max_retries: int = 3
     ) -> Optional[Dict[str, Any]]:
-        """Make rate-limited request to PubChem API with retry logic."""
+        """Make rate-limited request to PubChem API with retry logic.
+        
+        Uses persistent session with connection pooling for faster repeated requests.
+        """
         if self._offline_mode:
             return None
 
@@ -185,7 +206,8 @@ class PubChemClient:
                 self._rate_limit()
 
             try:
-                response = requests.get(url, timeout=timeout)
+                # Use session instead of requests.get for connection pooling
+                response = self._session.get(url, timeout=timeout)
                 if response.status_code == 200:
                     return response.json()
                 elif response.status_code == 404:

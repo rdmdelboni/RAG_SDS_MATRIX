@@ -101,13 +101,13 @@ class ChatTab(BaseTab):
         try:
             # Get RAG context from vector store
             vector_store = self.context.ingestion.vector_store
-            results = vector_store.search_with_context(text, top_k=3)
+            results = vector_store.search_with_context(text, k=3)
 
             context = ""
             if results:
-                context = "\n".join([r.get("context", "") for r in results])
-                if signals:
-                    signals.message.emit(f"Found {len(results)} relevant documents")
+                context = results  # search_with_context returns a formatted string
+                if signals and context:
+                    signals.message.emit("Found relevant documents for context")
             else:
                 if signals:
                     signals.message.emit("No relevant documents found in knowledge base")

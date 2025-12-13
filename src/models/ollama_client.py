@@ -373,16 +373,48 @@ class OllamaClient:
         )
 
     def _ensure_embeddings(self) -> None:
-        """Ensure embeddings model is initialized (lazy loading)."""
+        """Ensure embeddings model is initialized (lazy loading with fallback)."""
         if not self._embeddings_initialized:
             try:
+                # Try primary embedding model
                 self._embeddings = OllamaEmbeddings(
                     base_url=self.base_url,
                     model=self.embedding_model,
+                    timeout=30.0,  # Explicit timeout for model loading
                 )
+                logger.info("Embeddings model loaded: %s", self.embedding_model)
                 self._embeddings_initialized = True
             except Exception as e:
-                logger.error("Failed to initialize embeddings model: %s", e)
+                logger.warning(
+                    "Failed to initialize primary embeddings model (%s): %s. "
+                    "Attempting to use alternative models or disabling embeddings.",
+                    self.embedding_model,
+                    e,
+                )
+                
+                # Try fallback embedding models
+                fallback_models = ["nomic-embed-text:v1.5", "all-minilm:22m", "orca-mini:3b"]
+                for fallback_model in fallback_models:
+                    try:
+                        logger.info("Attempting fallback embedding model: %s", fallback_model)
+                        self._embeddings = OllamaEmbeddings(
+                            base_url=self.base_url,
+                            model=fallback_model,
+                            timeout=30.0,
+                        )
+                        logger.info("Successfully loaded fallback embeddings model: %s", fallback_model)
+                        self._embeddings_initialized = True
+                        return
+                    except Exception as fallback_error:
+                        logger.debug("Fallback model %s also failed: %s", fallback_model, fallback_error)
+                        continue
+                
+                # If all models fail, disable embeddings but continue
+                logger.error(
+                    "All embedding models failed. RAG features will be disabled. "
+                    "Ensure an embedding model is available in Ollama (e.g., 'ollama pull nomic-embed-text')"
+                )
+                self._embeddings = None
                 self._embeddings_initialized = True  # Mark as attempted to avoid retrying
 
     # === Connection Testing ===
