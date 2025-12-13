@@ -263,16 +263,25 @@ class SDSTab(BaseTab):
             self._set_status("Select a folder first", error=True)
             return
 
-        selected_count = sum(
-            1 for idx in range(self.sds_table.rowCount())
-            if self.sds_table.cellWidget(idx, 0) and getattr(self.sds_table.cellWidget(idx, 0).layout().itemAt(0).widget(), "isChecked", lambda: True)()
-        )
+        selected_files: list[Path] = []
+        for idx in range(self.sds_table.rowCount()):
+            widget = self.sds_table.cellWidget(idx, 0)
+            if widget:
+                checkbox = widget.layout().itemAt(0).widget()
+                if hasattr(checkbox, "isChecked") and checkbox.isChecked():
+                    # Get filename from column 1
+                    item = self.sds_table.item(idx, 1)
+                    if item:
+                        filename = item.text()
+                        if filename.startswith("✓ "):
+                            filename = filename[2:]
+                        selected_files.append(self.selected_folder / filename)
 
-        if selected_count == 0:
+        if not selected_files:
             self._set_status("Select at least one file to process", error=True)
             return
 
-        self._set_status(f"Starting SDS processing ({selected_count} files)…")
+        self._set_status(f"Starting SDS processing ({len(selected_files)} files)…")
         self._processing = True
         self.process_btn.setEnabled(False)
         self.stop_btn.setEnabled(True)
@@ -282,19 +291,68 @@ class SDSTab(BaseTab):
         use_rag = self.use_rag_checkbox.isChecked()
         self._start_task(
             self._process_sds_task,
-            self.selected_folder,
+            selected_files,
             use_rag,
             on_progress=self._on_sds_progress,
             on_result=self._on_sds_done,
         )
 
     def _process_sds_task(
-        self, folder: Path, use_rag: bool, *, signals: WorkerSignals | None = None
+        self, files: list[Path], use_rag: bool, *, signals: WorkerSignals | None = None
     ) -> dict:
         """Process SDS files in background."""
-        # TODO: Full implementation with actual SDS processing
-        # For now, return stub result
-        return {"processed": 0, "failed": 0, "message": "SDS processing stub - implement full handler"}
+        processed = 0
+        failed = 0
+        try:
+            from ...sds.processor import SDSProcessor
+
+            processor = SDSProcessor()
+            total = len(files)
+
+            for i, file_path in enumerate(files):
+                if not self._processing:
+                    if signals:
+                        signals.message.emit("Processing stopped by user")
+                    break
+
+                if signals:
+                    progress_pct = int((i / total) * 100)
+                    signals.progress.emit(progress_pct, f"Processing {i + 1}/{total}: {file_path.name}")
+
+                try:
+                    result = processor.process(file_path, use_rag=use_rag)
+
+                    if result.status == "success":
+                        processed += 1
+                        status = "Processed"
+                    else:
+                        failed += 1
+                        status = "Failed"
+
+                    # Emit file result to update table row if possible
+                    # We don't have row index here easily, but we can emit the filename
+                    # and let the UI handler update the table.
+                    # Currently WorkerSignals has file_result(filename, chemical, status, row_idx)
+                    # We can leave row_idx as -1 and let the handler find it by filename
+
+                    chemical = result.extractions.get("product_name", {}).get("value", "")
+                    if signals:
+                        signals.file_result.emit(file_path.name, chemical, status, -1)
+
+                except Exception as e:
+                    failed += 1
+                    if signals:
+                        signals.error.emit(f"Error processing {file_path.name}: {e}")
+
+            if signals:
+                signals.progress.emit(100, f"Completed: {processed} processed, {failed} failed")
+
+            return {"processed": processed, "failed": failed}
+
+        except Exception as e:
+            if signals:
+                signals.error.emit(f"Critical error in SDS task: {e}")
+            return {"processed": processed, "failed": failed}
 
     def _on_sds_progress(self, progress: int, message: str) -> None:
         """Handle SDS processing progress updates."""
