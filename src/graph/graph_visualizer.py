@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from pathlib import Path
 from typing import Any
+import json
 
 import matplotlib.pyplot as plt
 import networkx as nx
@@ -252,6 +253,7 @@ class GraphVisualizer:
 <head>
     <meta charset="utf-8">
     <title>{title}</title>
+    <script src="https://d3js.org/d3.v7.min.js"></script>
     <style>
         body {{
             font-family: Arial, sans-serif;
@@ -264,6 +266,7 @@ class GraphVisualizer:
             height: 800px;
             border: 1px solid #ccc;
             background: white;
+            position: relative;
         }}
         .node {{
             cursor: pointer;
@@ -277,14 +280,30 @@ class GraphVisualizer:
             stroke-opacity: 0.6;
         }}
         .node-label {{
-            font-size: 10px;
+            font-family: Arial, sans-serif;
+            font-size: 12px;
             pointer-events: none;
+            text-shadow: 0 1px 0 #fff, 1px 0 0 #fff, 0 -1px 0 #fff, -1px 0 0 #fff;
         }}
         #info {{
             margin-top: 20px;
             padding: 15px;
             background: white;
             border: 1px solid #ccc;
+            border-radius: 5px;
+            box-shadow: 0 2px 5px rgba(0,0,0,0.1);
+        }}
+        button {{
+            padding: 8px 16px;
+            background-color: #4CAF50;
+            color: white;
+            border: none;
+            border-radius: 4px;
+            cursor: pointer;
+            margin-top: 10px;
+        }}
+        button:hover {{
+            background-color: #45a049;
         }}
     </style>
 </head>
@@ -295,18 +314,166 @@ class GraphVisualizer:
         <h3>Graph Statistics</h3>
         <p>Nodes: {len(nodes)}</p>
         <p>Edges: {len(links)}</p>
-        <p><em>Note: Interactive visualization requires D3.js library</em></p>
+        <p><em>Click on a node to view details</em></p>
     </div>
 
     <script>
         // Graph data
         const graphData = {{
-            nodes: {nodes},
-            links: {links}
+            nodes: {json.dumps(nodes)},
+            links: {json.dumps(links)}
         }};
 
+        // Color maps from Python
+        const colorMap = {json.dumps(self.color_map)};
+        const edgeColorMap = {json.dumps(self.edge_color_map)};
+        const defaultNodeColor = "#CCCCCC";
+        const defaultEdgeColor = "#999999";
+
         console.log("Graph data loaded:", graphData);
-        // TODO: Add D3.js force-directed graph implementation
+
+        // Dimensions
+        const container = document.getElementById("graph");
+        const width = container.clientWidth;
+        const height = container.clientHeight;
+
+        // Create SVG
+        const svg = d3.select("#graph").append("svg")
+            .attr("width", width)
+            .attr("height", height)
+            .call(d3.zoom().on("zoom", (event) => {{
+                g.attr("transform", event.transform);
+            }}))
+            .on("dblclick.zoom", null); // Disable double click zoom
+
+        const g = svg.append("g");
+
+        // Simulation
+        const simulation = d3.forceSimulation(graphData.nodes)
+            .force("link", d3.forceLink(graphData.links).id(d => d.id).distance(150))
+            .force("charge", d3.forceManyBody().strength(-500))
+            .force("center", d3.forceCenter(width / 2, height / 2))
+            .force("collide", d3.forceCollide(50));
+
+        // Arrow marker for directed edges
+        svg.append("defs").selectAll("marker")
+            .data(["end"])
+            .enter().append("marker")
+            .attr("id", "arrow")
+            .attr("viewBox", "0 -5 10 10")
+            .attr("refX", 25) // Shift arrow back so it doesn't overlap node
+            .attr("refY", 0)
+            .attr("markerWidth", 6)
+            .attr("markerHeight", 6)
+            .attr("orient", "auto")
+            .append("path")
+            .attr("d", "M0,-5L10,0L0,5")
+            .attr("fill", "#999");
+
+        // Links
+        const link = g.append("g")
+            .attr("class", "links")
+            .selectAll("line")
+            .data(graphData.links)
+            .enter().append("line")
+            .attr("class", "link")
+            .attr("stroke", d => edgeColorMap[d.type] || defaultEdgeColor)
+            .attr("stroke-width", 2)
+            .attr("marker-end", "url(#arrow)");
+
+        // Nodes
+        const node = g.append("g")
+            .attr("class", "nodes")
+            .selectAll("g")
+            .data(graphData.nodes)
+            .enter().append("g")
+            .call(d3.drag()
+                .on("start", dragstarted)
+                .on("drag", dragged)
+                .on("end", dragended));
+
+        node.append("circle")
+            .attr("r", 15)
+            .attr("fill", d => colorMap[d.type] || defaultNodeColor);
+
+        // Node Labels
+        node.append("text")
+            .attr("dy", -20)
+            .attr("text-anchor", "middle")
+            .text(d => d.label)
+            .attr("class", "node-label");
+
+        // Node interaction
+        node.on("click", (event, d) => {{
+            // Highlight selected node
+            node.selectAll("circle").attr("stroke", null).attr("stroke-width", null);
+            d3.select(event.currentTarget).select("circle")
+                .attr("stroke", "#333")
+                .attr("stroke-width", 3);
+
+            const infoDiv = document.getElementById("info");
+            let propertiesHtml = "";
+            for (const [key, value] of Object.entries(d.properties)) {{
+                propertiesHtml += `<li><strong>${{key}}:</strong> ${{value}}</li>`;
+            }}
+
+            infoDiv.innerHTML = `
+                <h3>${{d.label}}</h3>
+                <p><strong>Type:</strong> ${{d.type}}</p>
+                <p><strong>ID:</strong> ${{d.id}}</p>
+                <h4>Properties:</h4>
+                <ul>${{propertiesHtml}}</ul>
+                <button onclick="resetInfo()">Show Graph Stats</button>
+            `;
+        }});
+
+        // Link interaction (tooltip)
+        link.append("title")
+            .text(d => `${{d.type}}`);
+
+        // Tick function
+        simulation.on("tick", () => {{
+            link
+                .attr("x1", d => d.source.x)
+                .attr("y1", d => d.source.y)
+                .attr("x2", d => d.target.x)
+                .attr("y2", d => d.target.y);
+
+            node
+                .attr("transform", d => `translate(${{d.x}},${{d.y}})`);
+        }});
+
+        // Drag functions
+        function dragstarted(event, d) {{
+            if (!event.active) simulation.alphaTarget(0.3).restart();
+            d.fx = d.x;
+            d.fy = d.y;
+        }}
+
+        function dragged(event, d) {{
+            d.fx = event.x;
+            d.fy = event.y;
+        }}
+
+        function dragended(event, d) {{
+            if (!event.active) simulation.alphaTarget(0);
+            d.fx = null;
+            d.fy = null;
+        }}
+
+        // Reset info function
+        window.resetInfo = function() {{
+             // Remove highlight
+             node.selectAll("circle").attr("stroke", "#fff").attr("stroke-width", 2);
+
+             const infoDiv = document.getElementById("info");
+             infoDiv.innerHTML = `
+                <h3>Graph Statistics</h3>
+                <p>Nodes: {len(nodes)}</p>
+                <p>Edges: {len(links)}</p>
+                <p><em>Click on a node to view details</em></p>
+            `;
+        }};
     </script>
 </body>
 </html>
