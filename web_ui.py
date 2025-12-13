@@ -98,10 +98,22 @@ HTML_TEMPLATE = """
     <script>
         const resultsDiv = document.getElementById('results');
         
+        function escapeHtml(text) {
+            if (!text) return text;
+            return text
+                .replace(/&/g, "&amp;")
+                .replace(/</g, "&lt;")
+                .replace(/>/g, "&gt;")
+                .replace(/"/g, "&quot;")
+                .replace(/'/g, "&#039;");
+        }
+
         function log(msg, type = 'info') {
             const timestamp = new Date().toLocaleTimeString();
             const className = type === 'error' ? 'error' : type === 'success' ? 'success' : 'loading';
-            resultsDiv.innerHTML += `<div class="${className}">[${timestamp}] ${msg}</div>`;
+            // Sanitize message to prevent XSS
+            const safeMsg = escapeHtml(msg);
+            resultsDiv.innerHTML += `<div class="${className}">[${timestamp}] ${safeMsg}</div>`;
             resultsDiv.scrollTop = resultsDiv.scrollHeight;
         }
 
