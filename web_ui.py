@@ -19,7 +19,7 @@ query_engine = GraphQueryEngine()
 
 HTML_TEMPLATE = """
 <!DOCTYPE html>
-<html>
+<html lang="en">
 <head>
     <title>RAG SDS Matrix</title>
     <style>
@@ -33,8 +33,17 @@ HTML_TEMPLATE = """
         button { 
             background: #4ECDC4; color: #1e1e1e; border: none; padding: 10px 20px; 
             border-radius: 6px; cursor: pointer; font-weight: 600; transition: all 0.3s;
+            display: flex; align-items: center; justify-content: center; gap: 8px;
         }
-        button:hover { background: #45b8b0; transform: translateY(-2px); }
+        button:hover:not(:disabled) { background: #45b8b0; transform: translateY(-2px); }
+        button:disabled { background: #555; color: #aaa; cursor: not-allowed; transform: none; }
+        .spinner {
+            display: none; width: 16px; height: 16px; border: 2px solid #aaa;
+            border-top: 2px solid #fff; border-radius: 50%; animation: spin 1s linear infinite;
+        }
+        button.loading .spinner { display: block; }
+        @keyframes spin { 0% { transform: rotate(0deg); } 100% { transform: rotate(360deg); } }
+
         input { background: #3d3d3d; color: #e0e0e0; border: 1px solid #404040; padding: 8px 12px; border-radius: 6px; width: 100%; }
         .input-group { margin-bottom: 15px; }
         label { display: block; margin-bottom: 5px; color: #b0b0b0; font-size: 0.9em; }
@@ -57,8 +66,8 @@ HTML_TEMPLATE = """
         <div class="section">
             <h2>Graph Operations</h2>
             <div class="button-group">
-                <button onclick="buildGraph()">🔨 Build Knowledge Graph</button>
-                <button onclick="getStats()">📊 Get Graph Stats</button>
+                <button onclick="buildGraph(this)"><span class="spinner"></span> <span>🔨 Build Knowledge Graph</span></button>
+                <button onclick="getStats(this)"><span class="spinner"></span> <span>📊 Get Graph Stats</span></button>
             </div>
             <div id="graph-status" style="color: #b0b0b0;"></div>
         </div>
@@ -66,17 +75,17 @@ HTML_TEMPLATE = """
         <div class="section">
             <h2>Chemical Queries</h2>
             <div class="input-group">
-                <label>CAS Number:</label>
-                <input type="text" id="cas-input" placeholder="e.g., 67-64-1">
+                <label for="cas-input">CAS Number:</label>
+                <input type="text" id="cas-input" placeholder="e.g., 67-64-1" onkeydown="if(event.key==='Enter') findIncompatibilities(document.getElementById('btn-incompat'))">
             </div>
             <div class="input-group">
-                <label>Max Depth (1-5):</label>
+                <label for="depth-input">Max Depth (1-5):</label>
                 <input type="number" id="depth-input" value="2" min="1" max="5">
             </div>
             <div class="button-group">
-                <button onclick="findIncompatibilities()">🔴 Find Incompatibilities</button>
-                <button onclick="findChains()">⛓️ Find Reaction Chains</button>
-                <button onclick="findClusters()">🎯 Find Clusters</button>
+                <button id="btn-incompat" onclick="findIncompatibilities(this)"><span class="spinner"></span> <span>🔴 Find Incompatibilities</span></button>
+                <button onclick="findChains(this)"><span class="spinner"></span> <span>⛓️ Find Reaction Chains</span></button>
+                <button onclick="findClusters(this)"><span class="spinner"></span> <span>🎯 Find Clusters</span></button>
             </div>
         </div>
 
@@ -96,81 +105,82 @@ HTML_TEMPLATE = """
             resultsDiv.scrollTop = resultsDiv.scrollHeight;
         }
 
-        function buildGraph() {
-            log('Building knowledge graph...');
-            fetch('/api/build-graph', { method: 'POST' })
-                .then(r => r.json())
-                .then(data => {
-                    if (data.error) log(data.error, 'error');
-                    else {
-                        log(`✓ Graph built: ${data.nodes} nodes, ${data.edges} edges`, 'success');
-                        document.getElementById('graph-status').innerHTML = `<strong>Nodes:</strong> ${data.nodes} | <strong>Edges:</strong> ${data.edges}`;
-                    }
-                })
-                .catch(e => log(e.message, 'error'));
+        async function runOperation(btn, name, operation) {
+            if (btn) {
+                btn.disabled = true;
+                btn.classList.add('loading');
+            }
+            log(name + '...', 'info');
+
+            try {
+                await operation();
+            } catch (e) {
+                log(e.message, 'error');
+            } finally {
+                if (btn) {
+                    btn.disabled = false;
+                    btn.classList.remove('loading');
+                }
+            }
         }
 
-        function getStats() {
-            log('Fetching graph statistics...');
-            fetch('/api/graph-stats')
-                .then(r => r.json())
-                .then(data => {
-                    if (data.error) log(data.error, 'error');
-                    else {
-                        log(`Nodes: ${data.nodes} | Edges: ${data.edges} | Density: ${data.density.toFixed(4)}`, 'success');
-                    }
-                })
-                .catch(e => log(e.message, 'error'));
+        function buildGraph(btn) {
+            runOperation(btn, 'Building knowledge graph', async () => {
+                const r = await fetch('/api/build-graph', { method: 'POST' });
+                const data = await r.json();
+                if (data.error) throw new Error(data.error);
+                log(`✓ Graph built: ${data.nodes} nodes, ${data.edges} edges`, 'success');
+                document.getElementById('graph-status').innerHTML = `<strong>Nodes:</strong> ${data.nodes} | <strong>Edges:</strong> ${data.edges}`;
+            });
         }
 
-        function findIncompatibilities() {
+        function getStats(btn) {
+            runOperation(btn, 'Fetching graph statistics', async () => {
+                const r = await fetch('/api/graph-stats');
+                const data = await r.json();
+                if (data.error) throw new Error(data.error);
+                log(`Nodes: ${data.nodes} | Edges: ${data.edges} | Density: ${data.density.toFixed(4)}`, 'success');
+            });
+        }
+
+        function findIncompatibilities(btn) {
             const cas = document.getElementById('cas-input').value.trim();
             if (!cas) return log('Enter a CAS number', 'error');
             const depth = document.getElementById('depth-input').value;
-            log(`Finding incompatibilities for ${cas}...`);
-            fetch(`/api/incompatibilities?cas=${cas}&depth=${depth}`)
-                .then(r => r.json())
-                .then(data => {
-                    if (data.error) log(data.error, 'error');
-                    else {
-                        log(`Found ${data.count} incompatibilities:`, 'success');
-                        data.results.forEach(r => log(`  ${r.cas_b} (depth ${r.depth}): ${r.justification || 'N/A'}`));
-                    }
-                })
-                .catch(e => log(e.message, 'error'));
+
+            runOperation(btn, `Finding incompatibilities for ${cas}`, async () => {
+                const r = await fetch(`/api/incompatibilities?cas=${cas}&depth=${depth}`);
+                const data = await r.json();
+                if (data.error) throw new Error(data.error);
+                log(`Found ${data.count} incompatibilities:`, 'success');
+                data.results.forEach(r => log(`  ${r.cas_b} (depth ${r.depth}): ${r.justification || 'N/A'}`));
+            });
         }
 
-        function findChains() {
+        function findChains(btn) {
             const cas = document.getElementById('cas-input').value.trim();
             if (!cas) return log('Enter a CAS number', 'error');
             const depth = document.getElementById('depth-input').value;
-            log(`Finding reaction chains for ${cas}...`);
-            fetch(`/api/chains?cas=${cas}&depth=${depth}`)
-                .then(r => r.json())
-                .then(data => {
-                    if (data.error) log(data.error, 'error');
-                    else {
-                        log(`Found ${data.count} chains:`, 'success');
-                        data.results.slice(0, 5).forEach(chain => log(`  ${chain.join(' → ')}`));
-                        if (data.count > 5) log(`  ... and ${data.count - 5} more`);
-                    }
-                })
-                .catch(e => log(e.message, 'error'));
+
+            runOperation(btn, `Finding reaction chains for ${cas}`, async () => {
+                const r = await fetch(`/api/chains?cas=${cas}&depth=${depth}`);
+                const data = await r.json();
+                if (data.error) throw new Error(data.error);
+                log(`Found ${data.count} chains:`, 'success');
+                data.results.slice(0, 5).forEach(chain => log(`  ${chain.join(' → ')}`));
+                if (data.count > 5) log(`  ... and ${data.count - 5} more`);
+            });
         }
 
-        function findClusters() {
-            log('Finding chemical clusters...');
-            fetch('/api/clusters')
-                .then(r => r.json())
-                .then(data => {
-                    if (data.error) log(data.error, 'error');
-                    else {
-                        log(`Found ${data.count} clusters:`, 'success');
-                        data.results.slice(0, 10).forEach(c => log(`  ${c.cas}: ${c.connection_count} connections`));
-                        if (data.count > 10) log(`  ... and ${data.count - 10} more`);
-                    }
-                })
-                .catch(e => log(e.message, 'error'));
+        function findClusters(btn) {
+            runOperation(btn, 'Finding chemical clusters', async () => {
+                const r = await fetch('/api/clusters');
+                const data = await r.json();
+                if (data.error) throw new Error(data.error);
+                log(`Found ${data.count} clusters:`, 'success');
+                data.results.slice(0, 10).forEach(c => log(`  ${c.cas}: ${c.connection_count} connections`));
+                if (data.count > 10) log(`  ... and ${data.count - 10} more`);
+            });
         }
     </script>
 </body>
