@@ -139,6 +139,9 @@ class DatabaseManager:
                 "CREATE SEQUENCE IF NOT EXISTS rag_documents_seq START 1;"
             )
             self.conn.execute("CREATE SEQUENCE IF NOT EXISTS harvest_seq START 1;")
+            self.conn.execute(
+                "CREATE SEQUENCE IF NOT EXISTS manufacturer_seq START 1;"
+            )
 
             # Documents table
             self.conn.execute(
@@ -295,6 +298,18 @@ class DatabaseManager:
             """
             )
 
+            # Manufacturer nodes table
+            self.conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS manufacturer_nodes (
+                    id BIGINT PRIMARY KEY DEFAULT nextval('manufacturer_seq'),
+                    name VARCHAR NOT NULL UNIQUE,
+                    metadata TEXT,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                );
+            """
+            )
+
     def _create_indexes(self) -> None:
         """Create database indexes for frequently queried fields."""
         logger.debug("Creating database indexes")
@@ -393,6 +408,11 @@ class DatabaseManager:
             )
             self.conn.execute(
                 "CREATE INDEX IF NOT EXISTS idx_matrix_decided_at ON matrix_decisions(decided_at);"
+            )
+
+            # Manufacturer indexes
+            self.conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_manufacturer_name ON manufacturer_nodes(name);"
             )
             
             logger.info("Database indexes created successfully")
@@ -1323,6 +1343,51 @@ class DatabaseManager:
                 [limit],
             ).fetchall()
         return [(r[0], r[1], r[2]) for r in rows]
+
+    # === Manufacturer Operations ===
+
+    def register_manufacturer(self, name: str, metadata: dict[str, Any] | None = None) -> int:
+        """Register a manufacturer node."""
+        name = name.strip()
+        metadata_str = json.dumps(metadata) if metadata else None
+
+        with self._lock:
+            # Check existing
+            existing = self.conn.execute(
+                "SELECT id FROM manufacturer_nodes WHERE name = ?",
+                [name]
+            ).fetchone()
+
+            if existing:
+                return existing[0]
+
+            result = self.conn.execute(
+                """
+                INSERT INTO manufacturer_nodes (name, metadata)
+                VALUES (?, ?)
+                RETURNING id;
+                """,
+                [name, metadata_str]
+            ).fetchone()
+
+            return result[0]
+
+    def get_all_manufacturers(self) -> list[dict[str, Any]]:
+        """Get all registered manufacturers."""
+        with self._lock:
+            rows = self.conn.execute(
+                "SELECT id, name, metadata, created_at FROM manufacturer_nodes ORDER BY name"
+            ).fetchall()
+
+            return [
+                {
+                    "id": row[0],
+                    "name": row[1],
+                    "metadata": json.loads(row[2]) if row[2] else None,
+                    "created_at": row[3]
+                }
+                for row in rows
+            ]
 
 
 @lru_cache(maxsize=1)
