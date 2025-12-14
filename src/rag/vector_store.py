@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import shutil
+import threading
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -55,6 +56,9 @@ class VectorStore:
 
         # Initialize ChromaDB
         self._db: Chroma | None = None
+
+        # Thread lock for write operations
+        self._lock = threading.Lock()
 
         logger.info("VectorStore initialized at: %s", self.persist_directory)
 
@@ -164,9 +168,11 @@ class VectorStore:
             batch = documents[i : i + batch_size]
 
             try:
-                if not self.ensure_ready():
-                    raise RuntimeError("vector store unavailable")
-                self.db.add_documents(batch)
+                with self._lock:
+                    if not self.ensure_ready():
+                        raise RuntimeError("vector store unavailable")
+                    self.db.add_documents(batch)
+
                 total_added += len(batch)
                 logger.debug(
                     "Added batch of %d documents (%d/%d)",

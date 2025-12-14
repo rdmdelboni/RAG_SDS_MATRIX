@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import time
+import threading
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -59,6 +61,9 @@ class SDSProcessor:
         self.confidence_scorer = ConfidenceScorer()
         self.chunker = TextChunker()
         self.router = ProfileRouter()
+
+        # Thread pool for background operations
+        self._executor = ThreadPoolExecutor(max_workers=2, thread_name_prefix="SDS_Background")
 
     def process(self, file_path: Path, use_rag: bool = True, force_reprocess: bool = False, progress_callback=None) -> ProcessingResult:
         """Process a single SDS document.
@@ -359,7 +364,16 @@ class SDSProcessor:
             processing_time = time.time() - start_time
 
             # Index raw SDS text + metadata into the RAG vector store
-            self._index_document_in_rag(doc_id, file_path, text, extractions)
+            # Run in background to not block response.
+            # We use a ThreadPoolExecutor (not daemon) to ensure tasks complete on shutdown if needed,
+            # but we don't wait for it here.
+            self._executor.submit(
+                self._index_document_in_rag,
+                doc_id,
+                file_path,
+                text,
+                extractions
+            )
 
             self.db.update_document_status(
                 doc_id,
