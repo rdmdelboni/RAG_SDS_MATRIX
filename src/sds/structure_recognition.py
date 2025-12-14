@@ -182,15 +182,23 @@ class StructureRecognizer:
                 self.cache.set(img_hash, result)
                 return result
         
-        # Method 2: RDKit-based structure recognition (if available)
-        rdkit_result = self._recognize_via_rdkit(image)
-        if rdkit_result.smiles:
-            result = rdkit_result
-            result.method = "rdkit"
+        # Method 2: DECIMER Deep Learning Model (if available)
+        decimer_result = self._recognize_via_decimer(image)
+        if decimer_result.smiles:
+            result = decimer_result
+            result.method = "decimer"
+            self.cache.set(img_hash, result)
+            return result
+
+        # Method 3: OSRA (if available)
+        osra_result = self._recognize_via_osra(image)
+        if osra_result.smiles:
+            result = osra_result
+            result.method = "osra"
             self.cache.set(img_hash, result)
             return result
         
-        # Method 3: Pattern matching for simple structures
+        # Method 4: Pattern matching for simple structures
         pattern_result = self._recognize_via_patterns(image)
         if pattern_result.smiles:
             result = pattern_result
@@ -247,24 +255,108 @@ class StructureRecognizer:
         
         return result
     
-    def _recognize_via_rdkit(self, image: Image.Image) -> StructureRecognitionResult:
-        """Recognize structure using RDKit (if available)."""
+    def _recognize_via_decimer(self, image: Image.Image) -> StructureRecognitionResult:
+        """Recognize structure using DECIMER (Deep Learning for Chemical Image Recognition)."""
         result = StructureRecognitionResult()
         
         try:
-            # Note: This is a placeholder. True chemical structure recognition
-            # from images requires specialized libraries like OSRA, ChemSchematicResolver,
-            # or deep learning models trained on chemical structures.
+            from DECIMER import predict_SMILES
             
-            # RDKit can convert between formats but not directly from images
-            # Would need: image -> molecule object -> SMILES
-            # This requires computer vision models trained on chemical structures
+            # Save image to temporary file as DECIMER might need path or work with PIL
+            # The library usually takes a path string.
+            import tempfile
+            import os
             
-            logger.debug("RDKit image recognition not implemented (requires specialized CV model)")
+            with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as temp_img:
+                image.save(temp_img.name)
+                temp_path = temp_img.name
             
+            try:
+                # Predict SMILES
+                smiles = predict_SMILES(temp_path)
+
+                if smiles:
+                    result.smiles = smiles
+                    result.confidence = 0.9  # DECIMER usually has high confidence if it returns something
+
+                    # Generate InChI if possible
+                    try:
+                        from rdkit import Chem
+                        mol = Chem.MolFromSmiles(smiles)
+                        if mol:
+                            result.inchi = Chem.MolToInchi(mol)
+                            result.inchi_key = Chem.MolToInchiKey(mol)
+                    except:
+                        pass
+            finally:
+                if os.path.exists(temp_path):
+                    os.unlink(temp_path)
+
+        except ImportError:
+            logger.debug("DECIMER not available")
         except Exception as e:
-            logger.debug(f"RDKit recognition failed: {e}")
+            logger.debug(f"DECIMER recognition failed: {e}")
+
+        return result
+
+    def _recognize_via_osra(self, image: Image.Image) -> StructureRecognitionResult:
+        """Recognize structure using OSRA (Optical Structure Recognition Application)."""
+        result = StructureRecognitionResult()
         
+        try:
+            import subprocess
+            import tempfile
+            import os
+            import shutil
+
+            # Check if OSRA is installed
+            if not shutil.which("osra"):
+                logger.debug("OSRA binary not found in path")
+                return result
+
+            # Save image to temporary file
+            with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as temp_img:
+                image.save(temp_img.name)
+                temp_path = temp_img.name
+
+            try:
+                # Run OSRA
+                # osra -f smi <image_file>
+                process = subprocess.Popen(
+                    ["osra", "-f", "smi", temp_path],
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE
+                )
+                stdout, stderr = process.communicate()
+
+                if process.returncode == 0:
+                    output = stdout.decode("utf-8").strip()
+                    # OSRA output might contain the filename and then the SMILES, or just SMILES
+                    # Typically: "SMILES_STRING" or "filename: SMILES_STRING"
+
+                    parts = output.split()
+                    if parts:
+                        smiles = parts[-1] # Assume last part is SMILES
+                        if len(smiles) > 1:
+                            result.smiles = smiles
+                            result.confidence = 0.8
+
+                            # Generate InChI
+                            try:
+                                from rdkit import Chem
+                                mol = Chem.MolFromSmiles(smiles)
+                                if mol:
+                                    result.inchi = Chem.MolToInchi(mol)
+                                    result.inchi_key = Chem.MolToInchiKey(mol)
+                            except:
+                                pass
+            finally:
+                if os.path.exists(temp_path):
+                    os.unlink(temp_path)
+
+        except Exception as e:
+            logger.debug(f"OSRA recognition failed: {e}")
+
         return result
     
     def _recognize_via_patterns(self, image: Image.Image) -> StructureRecognitionResult:
