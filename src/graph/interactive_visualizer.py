@@ -40,6 +40,8 @@ class InteractiveGraphVisualizer:
                 height=height,
                 width=width,
                 directed=True,
+                # Make the HTML self-contained (no external CDNs) so it works in QtWebEngine/offline.
+                cdn_resources="in_line",
             )
 
             # Add nodes with colors based on type
@@ -114,15 +116,12 @@ class InteractiveGraphVisualizer:
 
             # Save visualization
             try:
-                net.show(str(output_path))
-            except Exception as show_error:
-                # If show() fails, try write_html() as fallback
-                logger.warning(f"PyVis show() failed: {show_error}, trying write_html()...")
-                try:
-                    net.write_html(str(output_path))
-                except Exception as write_error:
-                    logger.error(f"PyVis write_html() also failed: {write_error}")
-                    raise write_error
+                # `show()` tries to open a browser and relies on template rendering; for the UI
+                # we only need a file to load, so write HTML directly.
+                net.write_html(str(output_path))
+            except Exception as write_error:
+                logger.error(f"PyVis write_html() failed: {write_error}")
+                raise
 
             logger.info(f"Interactive visualization saved to {output_path}")
 

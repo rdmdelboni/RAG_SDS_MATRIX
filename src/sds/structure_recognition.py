@@ -364,12 +364,115 @@ class StructureRecognizer:
         result = StructureRecognitionResult()
         
         try:
-            # Placeholder for pattern-based recognition
-            # Could detect simple structures like benzene rings, common functional groups
-            # This would require template matching or contour analysis
+            import cv2
             
-            logger.debug("Pattern-based recognition not implemented")
+            # Convert PIL Image to numpy array (OpenCV format)
+            # PIL is RGB, OpenCV is BGR
+            img_array = np.array(image)
             
+            # Handle RGBA
+            if img_array.shape[-1] == 4:
+                img_array = cv2.cvtColor(img_array, cv2.COLOR_RGBA2BGR)
+            # Handle RGB
+            elif len(img_array.shape) == 3:
+                img_array = cv2.cvtColor(img_array, cv2.COLOR_RGB2BGR)
+            # Handle Grayscale
+            elif len(img_array.shape) == 2:
+                img_array = cv2.cvtColor(img_array, cv2.COLOR_GRAY2BGR)
+
+            # Convert to grayscale for processing
+            gray = cv2.cvtColor(img_array, cv2.COLOR_BGR2GRAY)
+
+            # Blur to reduce noise
+            blurred = cv2.GaussianBlur(gray, (5, 5), 0)
+
+            # Threshold to binary (inverse, assuming black structures on white background)
+            # Using Otsu's binarization
+            _, thresh = cv2.threshold(blurred, 0, 255, cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU)
+
+            # Find contours
+            contours, _ = cv2.findContours(thresh, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+
+            # Sort contours by area (largest first)
+            contours = sorted(contours, key=cv2.contourArea, reverse=True)
+
+            # Check for simple shapes
+            for contour in contours:
+                # Filter small noise
+                area = cv2.contourArea(contour)
+                if area < 100:  # Minimum area threshold
+                    continue
+
+                # Approximate the contour
+                perimeter = cv2.arcLength(contour, True)
+                epsilon = 0.04 * perimeter
+                approx = cv2.approxPolyDP(contour, epsilon, True)
+
+                # Number of vertices
+                vertices = len(approx)
+
+                # Check convexity
+                if not cv2.isContourConvex(approx):
+                    continue
+
+                # Pattern Matching Heuristics
+
+                # Hexagon (6 vertices) -> Potential Benzene Ring
+                if vertices == 6:
+                    # Check aspect ratio to ensure it's roughly regular
+                    x, y, w, h = cv2.boundingRect(approx)
+                    aspect_ratio = float(w) / h
+
+                    if 0.8 <= aspect_ratio <= 1.2:
+                        # Likely a benzene ring or cyclohexane
+                        # For simplicity in "simple pattern matching", we assume aromatic benzene
+                        # as it's a very common solvent/chemical.
+                        result.smiles = "c1ccccc1"
+                        result.matched_name = "Benzene (Pattern)"
+                        result.confidence = 0.6
+                        result.method = "pattern_matching"
+
+                        # Generate InChI
+                        try:
+                            from rdkit import Chem
+                            mol = Chem.MolFromSmiles(result.smiles)
+                            if mol:
+                                result.inchi = Chem.MolToInchi(mol)
+                                result.inchi_key = Chem.MolToInchiKey(mol)
+                        except Exception as e:
+                            logger.debug(f"RDKit conversion failed in pattern recognition: {e}")
+
+                        return result
+
+                # Pentagon (5 vertices) -> Potential Cyclopentane/Furan
+                elif vertices == 5:
+                    x, y, w, h = cv2.boundingRect(approx)
+                    aspect_ratio = float(w) / h
+
+                    if 0.8 <= aspect_ratio <= 1.2:
+                        result.smiles = "C1CCCC1"  # Cyclopentane
+                        result.matched_name = "Cyclopentane (Pattern)"
+                        result.confidence = 0.5
+                        result.method = "pattern_matching"
+
+                        try:
+                            from rdkit import Chem
+                            mol = Chem.MolFromSmiles(result.smiles)
+                            if mol:
+                                result.inchi = Chem.MolToInchi(mol)
+                                result.inchi_key = Chem.MolToInchiKey(mol)
+                        except Exception as e:
+                            logger.debug(f"RDKit conversion failed in pattern recognition: {e}")
+
+                        return result
+
+            logger.debug(f"No recognizable patterns found in {len(contours)} contours")
+
+        except ImportError as e:
+            if 'cv2' in str(e):
+                logger.debug("OpenCV (cv2) not available for pattern recognition")
+            else:
+                logger.debug(f"Import error in pattern recognition: {e}")
         except Exception as e:
             logger.debug(f"Pattern recognition failed: {e}")
         

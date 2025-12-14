@@ -370,11 +370,11 @@ class RAGVisualizationTab(BaseTab):
         """Load first HTML visualization in preview."""
         html_files = list(output_dir.glob("*.html"))
         if html_files:
-            # Load the first HTML file
-            first_file = sorted(html_files)[0]
-            file_url = first_file.as_uri()
+            # Load the most recently generated HTML file (avoid previewing stale files).
+            newest_file = max(html_files, key=lambda p: p.stat().st_mtime)
+            file_url = newest_file.as_uri()
             self.web_view.load(QtCore.QUrl(file_url))
-            self._set_status(f"Preview: {first_file.name}")
+            self._set_status(f"Preview: {newest_file.name}")
 
     def _on_open_output(self) -> None:
         """Open output directory in file explorer (Nautilus on Linux, Finder on macOS, Explorer on Windows)."""
