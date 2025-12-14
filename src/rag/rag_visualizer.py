@@ -362,8 +362,10 @@ class RAGVisualizer:
             output_path: Output HTML file path
         """
         try:
-            from bokeh.plotting import figure, output_file, save
+            from bokeh.plotting import figure
             from bokeh.models import HoverTool, ColumnDataSource
+            from bokeh.embed import file_html
+            from bokeh.resources import INLINE
 
             # Prepare data
             source_data = {
@@ -417,9 +419,11 @@ class RAGVisualizer:
             p.yaxis.axis_label = "Dimension 2"
             p.title.text_font_size = "14pt"
 
-            # Save
-            output_file(str(output_path))
-            save(p)
+            # Save as a self-contained HTML (no CDN) so it works inside QtWebEngine/offline.
+            output_path = Path(output_path)
+            output_path.parent.mkdir(parents=True, exist_ok=True)
+            html = file_html(p, INLINE, "Document Embedding Space")
+            output_path.write_text(html, encoding="utf-8")
             self.logger.info(f"Embedding space visualization saved to {output_path}")
 
         except ImportError:
