@@ -140,6 +140,7 @@ class DatabaseManager:
             )
             self.conn.execute("CREATE SEQUENCE IF NOT EXISTS harvest_seq START 1;")
             self.conn.execute("CREATE SEQUENCE IF NOT EXISTS sds_ingredients_seq START 1;")
+            self.conn.execute("CREATE SEQUENCE IF NOT EXISTS manufacturer_seq START 1;")
 
             # Documents table
             self.conn.execute(
