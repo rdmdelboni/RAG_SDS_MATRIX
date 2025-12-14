@@ -380,7 +380,10 @@ class OllamaClient:
                 self._embeddings = OllamaEmbeddings(
                     base_url=self.base_url,
                     model=self.embedding_model,
-                    timeout=30.0,  # Explicit timeout for model loading
+                    # langchain_ollama.OllamaEmbeddings does not accept a top-level `timeout`;
+                    # pass through to the underlying HTTP client instead.
+                    sync_client_kwargs={"timeout": float(self.timeout)},
+                    async_client_kwargs={"timeout": float(self.timeout)},
                 )
                 logger.info("Embeddings model loaded: %s", self.embedding_model)
                 self._embeddings_initialized = True
@@ -400,7 +403,8 @@ class OllamaClient:
                         self._embeddings = OllamaEmbeddings(
                             base_url=self.base_url,
                             model=fallback_model,
-                            timeout=30.0,
+                            sync_client_kwargs={"timeout": float(self.timeout)},
+                            async_client_kwargs={"timeout": float(self.timeout)},
                         )
                         logger.info("Successfully loaded fallback embeddings model: %s", fallback_model)
                         self._embeddings_initialized = True
