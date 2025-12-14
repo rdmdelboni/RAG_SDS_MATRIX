@@ -46,10 +46,17 @@ class Phase1Enricher:
 
         logger.info(f"Found {len(manufacturers)} unique manufacturers")
 
-        # Note: This would require a new table for manufacturer nodes
-        # For now, log the findings
-        logger.info(f"Manufacturers: {list(manufacturers)[:5]}...")
-        return len(manufacturers)
+        # Register manufacturers in the graph database
+        count = 0
+        for m_name in manufacturers:
+            try:
+                self.db.register_manufacturer(m_name, metadata={"source": "extraction"})
+                count += 1
+            except Exception as e:
+                logger.error(f"Error registering manufacturer {m_name}: {e}")
+
+        logger.info(f"Registered {count} manufacturer nodes")
+        return count
 
     def extract_ghs_relationships(self) -> int:
         """Extract GHS classification relationships.
