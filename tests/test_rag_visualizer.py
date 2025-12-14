@@ -7,6 +7,8 @@ from pathlib import Path
 
 import pytest
 
+pytest.importorskip("networkx", reason="networkx not installed in this environment")
+
 from src.rag.rag_visualizer import (
     RAGVisualizer,
     RetrievalDocument,

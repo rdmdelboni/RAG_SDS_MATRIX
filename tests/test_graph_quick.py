@@ -5,6 +5,10 @@ import sys
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent))
 
+import pytest
+
+pytest.importorskip("networkx", reason="networkx not installed in this environment")
+
 from src.graph import ChemicalGraph, GraphQueryEngine, GraphVisualizer
 
 def main():

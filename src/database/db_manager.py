@@ -139,9 +139,7 @@ class DatabaseManager:
                 "CREATE SEQUENCE IF NOT EXISTS rag_documents_seq START 1;"
             )
             self.conn.execute("CREATE SEQUENCE IF NOT EXISTS harvest_seq START 1;")
-            self.conn.execute(
-                "CREATE SEQUENCE IF NOT EXISTS manufacturer_seq START 1;"
-            )
+            self.conn.execute("CREATE SEQUENCE IF NOT EXISTS sds_ingredients_seq START 1;")
 
             # Documents table
             self.conn.execute(
@@ -181,6 +179,27 @@ class DatabaseManager:
                     source VARCHAR DEFAULT 'heuristic',
                     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                     UNIQUE(document_id, field_name)
+                );
+            """
+            )
+
+            # SDS ingredients (Section 3 composition) - multiple rows per SDS
+            self.conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS sds_ingredients (
+                    id BIGINT PRIMARY KEY DEFAULT nextval('sds_ingredients_seq'),
+                    document_id BIGINT NOT NULL,
+                    cas_number VARCHAR,
+                    chemical_name TEXT,
+                    concentration_text TEXT,
+                    concentration_min DOUBLE,
+                    concentration_max DOUBLE,
+                    concentration_unit VARCHAR,
+                    confidence DOUBLE,
+                    evidence TEXT,
+                    source VARCHAR DEFAULT 'heuristic',
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    UNIQUE(document_id, cas_number, chemical_name)
                 );
             """
             )
@@ -347,6 +366,14 @@ class DatabaseManager:
             # Composite index for common query pattern (document + field lookup)
             self.conn.execute(
                 "CREATE INDEX IF NOT EXISTS idx_extractions_doc_field ON extractions(document_id, field_name);"
+            )
+
+            # SDS ingredients indexes
+            self.conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_sds_ingredients_document_id ON sds_ingredients(document_id);"
+            )
+            self.conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_sds_ingredients_cas ON sds_ingredients(cas_number);"
             )
             
             # Index on JSON-extracted fields for quality queries
@@ -801,6 +828,215 @@ class DatabaseManager:
                 }
                 for row in rows
             }
+
+    # === SDS Ingredient Operations ===
+
+    def replace_document_ingredients(
+        self, document_id: int, ingredients: list[dict[str, Any]]
+    ) -> None:
+        """Replace Section 3 ingredient list for a document."""
+        with self._lock:
+            self.conn.execute(
+                "DELETE FROM sds_ingredients WHERE document_id = ?;",
+                [document_id],
+            )
+
+            if not ingredients:
+                return
+
+            batch = []
+            for ing in ingredients:
+                batch.append(
+                    (
+                        document_id,
+                        ing.get("cas_number"),
+                        ing.get("chemical_name"),
+                        ing.get("concentration_text"),
+                        ing.get("concentration_min"),
+                        ing.get("concentration_max"),
+                        ing.get("concentration_unit"),
+                        ing.get("confidence"),
+                        ing.get("evidence"),
+                        ing.get("source", "heuristic"),
+                    )
+                )
+
+            self.conn.executemany(
+                """
+                INSERT INTO sds_ingredients (
+                    document_id, cas_number, chemical_name, concentration_text,
+                    concentration_min, concentration_max, concentration_unit,
+                    confidence, evidence, source
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
+                """,
+                batch,
+            )
+
+    def get_document_ingredients(self, document_id: int) -> list[dict[str, Any]]:
+        """Return stored ingredient rows for a document."""
+        with self._lock:
+            rows = self.conn.execute(
+                """
+                SELECT cas_number, chemical_name, concentration_text, concentration_min,
+                       concentration_max, concentration_unit, confidence, evidence, source, created_at
+                FROM sds_ingredients
+                WHERE document_id = ?
+                ORDER BY confidence DESC NULLS LAST, cas_number NULLS LAST, chemical_name NULLS LAST;
+                """,
+                [document_id],
+            ).fetchall()
+
+        columns = [
+            "cas_number",
+            "chemical_name",
+            "concentration_text",
+            "concentration_min",
+            "concentration_max",
+            "concentration_unit",
+            "confidence",
+            "evidence",
+            "source",
+            "created_at",
+        ]
+        return [dict(zip(columns, row)) for row in rows]
+
+    def get_inventory_cas_numbers(self) -> list[str]:
+        """Return distinct CAS numbers identified across all processed SDS."""
+        with self._lock:
+            rows = self.conn.execute(
+                """
+                SELECT DISTINCT cas
+                FROM (
+                    SELECT value AS cas
+                    FROM extractions
+                    WHERE field_name = 'cas_number'
+                      AND value IS NOT NULL
+                      AND value NOT IN ('NOT_FOUND', 'N/A')
+
+                    UNION
+
+                    SELECT cas_number AS cas
+                    FROM sds_ingredients
+                    WHERE cas_number IS NOT NULL
+                ) t
+                WHERE cas IS NOT NULL
+                ORDER BY cas;
+                """
+            ).fetchall()
+
+        return [r[0] for r in rows if r and r[0]]
+
+    def get_identified_chemicals(self) -> list[dict[str, Any]]:
+        """Return identified chemicals (CAS + best-effort name) across SDS set."""
+        with self._lock:
+            rows = self.conn.execute(
+                """
+                SELECT cas_number, chemical_name, confidence, document_id
+                FROM sds_ingredients
+                WHERE cas_number IS NOT NULL
+
+                UNION ALL
+
+                SELECT
+                    e.value AS cas_number,
+                    p.value AS chemical_name,
+                    COALESCE(p.confidence, e.confidence) AS confidence,
+                    e.document_id AS document_id
+                FROM extractions e
+                LEFT JOIN extractions p
+                    ON p.document_id = e.document_id AND p.field_name = 'product_name'
+                WHERE e.field_name = 'cas_number'
+                  AND e.value IS NOT NULL
+                  AND e.value NOT IN ('NOT_FOUND', 'N/A');
+                """
+            ).fetchall()
+
+        # Choose the best (highest-confidence) name per CAS; also count documents
+        by_cas: dict[str, dict[str, Any]] = {}
+        for cas, name, conf, doc_id in rows:
+            cas = (cas or "").strip()
+            if not cas:
+                continue
+            entry = by_cas.get(cas)
+            if entry is None:
+                by_cas[cas] = {
+                    "cas_number": cas,
+                    "chemical_name": (name or "").strip() or None,
+                    "name_confidence": float(conf) if conf is not None else None,
+                    "document_ids": {int(doc_id)} if doc_id is not None else set(),
+                }
+                continue
+
+            if doc_id is not None:
+                entry["document_ids"].add(int(doc_id))
+
+            name = (name or "").strip()
+            if name:
+                prev_conf = entry.get("name_confidence")
+                new_conf = float(conf) if conf is not None else 0.0
+                if entry.get("chemical_name") is None or (prev_conf is None) or (new_conf > prev_conf):
+                    entry["chemical_name"] = name
+                    entry["name_confidence"] = new_conf
+
+        chemicals = []
+        for entry in by_cas.values():
+            chemicals.append(
+                {
+                    "cas_number": entry["cas_number"],
+                    "chemical_name": entry.get("chemical_name"),
+                    "document_count": len(entry["document_ids"]),
+                }
+            )
+        chemicals.sort(key=lambda d: (-(d["document_count"] or 0), d["cas_number"]))
+        return chemicals
+
+    def find_hazardous_combinations(
+        self,
+        cas_numbers: list[str] | None = None,
+        include_restricted: bool = True,
+    ) -> list[dict[str, Any]]:
+        """Find incompatibility rules that apply within a CAS inventory.
+
+        Args:
+            cas_numbers: If provided, restrict to this list; otherwise uses all identified CAS.
+            include_restricted: If True, includes 'R' (restricted) in addition to 'I' (incompatible).
+        """
+        if cas_numbers is None:
+            cas_numbers = self.get_inventory_cas_numbers()
+
+        cas_numbers = sorted({c.strip() for c in cas_numbers if c and c.strip()})
+        if not cas_numbers:
+            return []
+
+        rule_set = ["I", "R"] if include_restricted else ["I"]
+        with self._lock:
+            rows = self.conn.execute(
+                """
+                WITH inventory(cas) AS (
+                    SELECT * FROM UNNEST(?)
+                )
+                SELECT ri.cas_a, ri.cas_b, ri.rule, ri.source, ri.justification, ri.group_a, ri.group_b, ri.indexed_at
+                FROM rag_incompatibilities ri
+                JOIN inventory a ON ri.cas_a = a.cas
+                JOIN inventory b ON ri.cas_b = b.cas
+                WHERE ri.rule IN (SELECT * FROM UNNEST(?))
+                ORDER BY ri.rule, ri.cas_a, ri.cas_b;
+                """,
+                [cas_numbers, rule_set],
+            ).fetchall()
+
+        columns = [
+            "cas_a",
+            "cas_b",
+            "rule",
+            "source",
+            "justification",
+            "group_a",
+            "group_b",
+            "indexed_at",
+        ]
+        return [dict(zip(columns, row)) for row in rows]
 
     # === Results / Matrix Queries ===
 

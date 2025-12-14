@@ -16,6 +16,7 @@ from .confidence_scorer import ConfidenceScorer, FieldSource
 from .extractor import SDSExtractor
 from .external_validator import ExternalValidator
 from .heuristics import HeuristicExtractor
+from .ingredient_extractor import IngredientExtractor
 from .llm_extractor import LLMExtractor
 from .pubchem_enrichment import PubChemEnricher
 from .validator import FieldValidator, validate_extraction_result, validate_full_consistency
@@ -48,6 +49,7 @@ class SDSProcessor:
         self.db = get_db_manager()
         self.extractor = SDSExtractor()
         self.heuristics = HeuristicExtractor()
+        self.ingredient_extractor = IngredientExtractor()
         # LLMExtractor now uses few-shot learning by default for better accuracy
         self.llm = LLMExtractor(use_few_shot=True, use_consensus=False)
         self.validator = FieldValidator()
@@ -180,6 +182,30 @@ class SDSProcessor:
 
             text = extracted["text"]
             sections = extracted.get("sections", {})
+
+            # Extract full ingredient list from Section 3 (composition)
+            try:
+                ingredients = self.ingredient_extractor.extract(text, sections)
+                self.db.replace_document_ingredients(
+                    doc_id,
+                    [
+                        {
+                            "cas_number": ing.cas_number,
+                            "chemical_name": ing.chemical_name,
+                            "concentration_text": ing.concentration_text,
+                            "concentration_min": ing.concentration_min,
+                            "concentration_max": ing.concentration_max,
+                            "concentration_unit": ing.concentration_unit,
+                            "confidence": ing.confidence,
+                            "evidence": ing.evidence,
+                            "source": "heuristic",
+                        }
+                        for ing in ingredients
+                    ],
+                )
+                logger.info("Extracted %d ingredients from Section 3", len(ingredients))
+            except Exception as exc:  # pragma: no cover - best effort
+                logger.warning("Ingredient extraction failed: %s", exc)
 
             # Detect Manufacturer Profile
             profile = self.router.identify_profile(text)

@@ -9,9 +9,40 @@ class _StubDb:
     def __init__(self):
         self.stored = []
         self.updated = []
+        self.ingredients = []
+
+    # === Cache/Dedup APIs used by SDSProcessor ===
+
+    def check_file_by_name_and_size(self, filename, file_size_bytes):
+        return None
+
+    def get_document_by_path(self, file_path: Path):
+        return None
+
+    def is_document_already_processed(self, document_id: int) -> bool:
+        return False
+
+    def get_extractions_by_document(self, document_id: int):
+        return {}
+
+    def get_document_status(self, document_id: int):
+        return {}
 
     def register_document(self, filename, file_path, file_size, file_type, num_pages=None):
         return 1
+
+    def store_extractions_batch(self, document_id: int, extractions):
+        for field_name, value, confidence, context, validation_status, validation_message, source in extractions:
+            self.store_extraction(
+                document_id,
+                field_name,
+                value,
+                confidence,
+                context=context,
+                validation_status=validation_status,
+                validation_message=validation_message,
+                source=source,
+            )
 
     def store_extraction(
         self,
@@ -37,6 +68,9 @@ class _StubDb:
             }
         )
 
+    def replace_document_ingredients(self, document_id: int, ingredients):
+        self.ingredients = list(ingredients)
+
     def update_document_status(
         self,
         doc_id,
@@ -61,12 +95,12 @@ class _StubDb:
 
 
 class _StubExtractor:
-    def extract_document(self, file_path: Path):
+    def extract_document(self, file_path: Path, progress_callback=None):
         return {"text": "Sample SDS text", "sections": {}}
 
 
 class _StubHeuristics:
-    def extract_all_fields(self, text, sections=None):
+    def extract_all_fields(self, text, sections=None, profile=None):
         return {
             "hazard_class": {"value": "3", "confidence": 0.9, "context": "", "source": "heuristic"},
         }
@@ -174,7 +208,7 @@ def test_missing_fields_trigger_llm_calls(monkeypatch, tmp_path: Path):
     processor.extractor = _StubExtractor()
 
     class _HeuristicsNoFields:
-        def extract_all_fields(self, text, sections=None):
+        def extract_all_fields(self, text, sections=None, profile=None):
             # Return empty to force missing required fields
             return {}
 
@@ -216,7 +250,7 @@ def test_refine_heuristic_invoked_on_low_confidence(monkeypatch, tmp_path: Path)
     processor.extractor = _StubExtractor()
 
     class _HeuristicsLowConf:
-        def extract_all_fields(self, text, sections=None):
+        def extract_all_fields(self, text, sections=None, profile=None):
             return {
                 "product_name": {"value": "Acido Forte", "confidence": 0.5, "context": "", "source": "heuristic"},
             }
@@ -255,7 +289,7 @@ def test_processor_output_feeds_matrix(monkeypatch, tmp_path: Path):
     processor.extractor = _StubExtractor()
 
     class _HeuristicsSimple:
-        def extract_all_fields(self, text, sections=None):
+        def extract_all_fields(self, text, sections=None, profile=None):
             return {
                 "product_name": {"value": "Produto A", "confidence": 0.9, "context": "", "source": "heuristic"},
                 "hazard_class": {"value": "3", "confidence": 0.9, "context": "", "source": "heuristic"},
