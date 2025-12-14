@@ -70,3 +70,4 @@ pytest-mock>=3.12.0
 # === Chemistry ===
 rdkit>=2023.9.0
 DECIMER>=2.4.0
+opencv-python-headless>=4.0.0
