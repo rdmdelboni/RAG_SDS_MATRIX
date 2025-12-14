@@ -294,6 +294,148 @@ class RAGVisualizer:
             steps: Pipeline steps in order
             output_path: Output file path (without extension)
         """
+        def _write_pipeline_html(path: Path) -> None:
+            path.parent.mkdir(parents=True, exist_ok=True)
+
+            colors = {
+                "input": "#E8F4F8",
+                "retrieval": "#B3E5FC",
+                "ranking": "#81D4FA",
+                "generation": "#4FC3F7",
+                "output": "#29B6F6",
+            }
+
+            def _escape(s: str) -> str:
+                return (
+                    s.replace("&", "&amp;")
+                    .replace("<", "&lt;")
+                    .replace(">", "&gt;")
+                    .replace('"', "&quot;")
+                    .replace("'", "&#039;")
+                )
+
+            cards = []
+            for step in steps:
+                bg = colors.get(step.step_type, "#E0E0E0")
+                metrics_html = ""
+                if step.metrics:
+                    items = "".join(
+                        f"<li><span class='k'>{_escape(str(k))}</span>: <span class='v'>{_escape(str(v))}</span></li>"
+                        for k, v in step.metrics.items()
+                    )
+                    metrics_html = f"<ul class='metrics'>{items}</ul>"
+
+                cards.append(
+                    f"""
+                    <div class="card" style="--bg:{bg}">
+                      <div class="type">{_escape(step.step_type)}</div>
+                      <div class="name">{_escape(step.name)}</div>
+                      <div class="desc">{_escape(step.description)}</div>
+                      {metrics_html}
+                    </div>
+                    """
+                )
+
+            # Use plain HTML/CSS so it works without Graphviz binaries.
+            html = f"""<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <title>RAG Pipeline</title>
+  <style>
+    :root {{
+      --bg: #ffffff;
+      --text: #111827;
+      --muted: #6b7280;
+      --border: #e5e7eb;
+      --shadow: 0 1px 2px rgba(0,0,0,0.08);
+    }}
+    body {{
+      margin: 0;
+      padding: 16px;
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+      background: var(--bg);
+      color: var(--text);
+    }}
+    h1 {{ margin: 0 0 12px; font-size: 18px; }}
+    .row {{
+      display: flex;
+      flex-wrap: wrap;
+      gap: 10px;
+      align-items: stretch;
+    }}
+    .card {{
+      flex: 1 1 220px;
+      min-width: 220px;
+      border: 1px solid var(--border);
+      border-left: 8px solid var(--bg);
+      background: #fff;
+      border-radius: 10px;
+      padding: 10px 12px;
+      box-shadow: var(--shadow);
+      position: relative;
+    }}
+    .type {{
+      font-size: 11px;
+      color: var(--muted);
+      text-transform: uppercase;
+      letter-spacing: .08em;
+      margin-bottom: 4px;
+    }}
+    .name {{
+      font-weight: 700;
+      margin-bottom: 4px;
+      line-height: 1.2;
+    }}
+    .desc {{
+      color: #111827;
+      font-size: 12px;
+      margin-bottom: 8px;
+    }}
+    .metrics {{
+      margin: 0;
+      padding-left: 18px;
+      color: var(--muted);
+      font-size: 11px;
+      line-height: 1.35;
+    }}
+    .metrics .k {{ color: #374151; }}
+    .arrow {{
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      color: #9ca3af;
+      font-size: 18px;
+      padding: 0 2px;
+      user-select: none;
+    }}
+    .flow {{
+      display: flex;
+      flex-wrap: wrap;
+      gap: 10px;
+      align-items: center;
+    }}
+    .flow > .card {{ flex: 0 1 260px; }}
+    @media (max-width: 900px) {{
+      .flow {{ align-items: stretch; }}
+      .arrow {{ display: none; }}
+      .flow > .card {{ flex: 1 1 240px; }}
+    }}
+  </style>
+</head>
+<body>
+  <h1>RAG Pipeline</h1>
+  <div class="flow">
+    {"".join(f"{cards[i]}<div class='arrow'>→</div>" if i < len(cards)-1 else cards[i] for i in range(len(cards)))}
+  </div>
+</body>
+</html>
+"""
+            path.write_text(html, encoding="utf-8")
+
+        out_base = Path(output_path)
+        html_out = out_base if out_base.suffix.lower() == ".html" else out_base.with_suffix(".html")
+
         try:
             import graphviz
 
@@ -340,9 +482,22 @@ class RAGVisualizer:
             self.logger.info(f"RAG pipeline visualization saved to {output_path}.svg")
 
         except ImportError:
-            self.logger.error("Graphviz not installed. Install with: pip install graphviz")
-            raise
+            self.logger.warning(
+                "Graphviz python package not installed; writing HTML pipeline instead."
+            )
+            _write_pipeline_html(html_out)
+            self.logger.info("RAG pipeline visualization saved to %s", html_out)
         except Exception as e:
+            # Most common: graphviz installed but `dot` binary missing from PATH.
+            msg = str(e).lower()
+            if "posixpath('dot')" in msg or "failed to execute" in msg or "graphviz executables" in msg:
+                self.logger.warning(
+                    "Graphviz 'dot' not available; writing HTML pipeline instead. Error: %s", e
+                )
+                _write_pipeline_html(html_out)
+                self.logger.info("RAG pipeline visualization saved to %s", html_out)
+                return
+
             self.logger.error(f"Failed to create RAG pipeline visualization: {e}")
             raise
 

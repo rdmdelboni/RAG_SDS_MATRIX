@@ -18,12 +18,16 @@ logger = get_logger(__name__)
 class MatrixExporter:
     """Export matrices to CSV, Excel, PDF, and JSON formats."""
 
-    def __init__(self) -> None:
-        """Initialize exporter."""
+    def __init__(self, db: Any | None = None) -> None:
+        """Initialize exporter.
+
+        Args:
+            db: Optional DatabaseManager-like object (used by UI/tests).
+        """
         self.settings = get_settings()
         from ..database import get_db_manager
 
-        self.db = get_db_manager()
+        self.db = db or get_db_manager()
 
     def export_to_csv(
         self,
@@ -253,6 +257,96 @@ class MatrixExporter:
         except Exception as exc:
             logger.error("Failed to export matrix decisions: %s", exc)
             return pd.DataFrame()
+
+    # === UI Convenience Wrappers ===
+
+    def export_xlsx(self, output_path: Path | str) -> bool:
+        """UI-friendly Excel export (multiple sheets)."""
+        from .builder import MatrixBuilder
+
+        builder = MatrixBuilder(self.db)
+        incompat_df = builder.build_incompatibility_matrix()
+        hazard_df = builder.build_hazard_matrix()
+        decisions_df = self.export_decisions_long()
+
+        sheets: dict[str, pd.DataFrame] = {}
+        if not incompat_df.empty:
+            sheets["Incompatibilities"] = incompat_df
+        if not hazard_df.empty:
+            sheets["Hazards"] = hazard_df
+        if not decisions_df.empty:
+            sheets["Decisions"] = decisions_df
+
+        if not sheets:
+            sheets = {"Empty": pd.DataFrame([{"message": "No data to export"}])}
+
+        return self.export_to_excel(sheets, output_path, include_summary=True)
+
+    def export_json(self, output_path: Path | str) -> bool:
+        """UI-friendly JSON export (matrices serialized)."""
+        from .builder import MatrixBuilder
+
+        builder = MatrixBuilder(self.db)
+        incompat_df = builder.build_incompatibility_matrix()
+        hazard_df = builder.build_hazard_matrix()
+        decisions_df = self.export_decisions_long()
+
+        payload: dict[str, Any] = {
+            "incompatibility_matrix": incompat_df.to_dict(orient="split") if not incompat_df.empty else None,
+            "hazard_matrix": hazard_df.to_dict(orient="records") if not hazard_df.empty else None,
+            "decisions": decisions_df.to_dict(orient="records") if not decisions_df.empty else None,
+        }
+        return self.export_to_json(payload, output_path, pretty=True)
+
+    def export_html(self, output_path: Path | str) -> bool:
+        """UI-friendly HTML export (simple standalone report)."""
+        from .builder import MatrixBuilder
+
+        try:
+            builder = MatrixBuilder(self.db)
+            incompat_df = builder.build_incompatibility_matrix()
+            hazard_df = builder.build_hazard_matrix()
+            decisions_df = self.export_decisions_long()
+
+            output_path = Path(output_path)
+            output_path.parent.mkdir(parents=True, exist_ok=True)
+
+            def _table(df: pd.DataFrame) -> str:
+                if df.empty:
+                    return "<p><em>No data</em></p>"
+                return df.to_html(index=True, border=0, classes="tbl")
+
+            html = f"""<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <title>RAG SDS Matrix Export</title>
+  <style>
+    body {{ font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; padding: 16px; }}
+    h1 {{ margin: 0 0 12px; }}
+    h2 {{ margin-top: 24px; }}
+    .tbl {{ border-collapse: collapse; width: 100%; }}
+    .tbl th, .tbl td {{ border: 1px solid #ddd; padding: 6px 8px; font-size: 12px; vertical-align: top; }}
+    .tbl th {{ background: #f6f6f6; position: sticky; top: 0; }}
+  </style>
+</head>
+<body>
+  <h1>RAG SDS Matrix Export</h1>
+  <h2>Incompatibility Matrix</h2>
+  {_table(incompat_df)}
+  <h2>Hazard Matrix</h2>
+  {_table(hazard_df)}
+  <h2>Decisions</h2>
+  {_table(decisions_df)}
+</body>
+</html>
+"""
+            output_path.write_text(html, encoding="utf-8")
+            logger.info("Exported matrices to HTML: %s", output_path)
+            return True
+        except Exception as exc:
+            logger.error("HTML export failed: %s", exc)
+            return False
 
     def _export_to_pdf_simple(
         self,

@@ -42,10 +42,22 @@ class CompatibilityResult:
 class MatrixBuilder:
     """Build chemical compatibility and hazard matrices from SDS extractions."""
 
-    def __init__(self) -> None:
-        """Initialize matrix builder."""
-        self.db = get_db_manager()
+    def __init__(self, db: Any | None = None) -> None:
+        """Initialize matrix builder.
+
+        Args:
+            db: Optional DatabaseManager-like object (used by UI/tests).
+        """
+        self.db = db or get_db_manager()
         self.hazard_idlh_threshold = get_settings().hazard_idlh_threshold
+
+    def build(self, filters: dict[str, Any] | None = None) -> pd.DataFrame:
+        """Backward-compatible convenience method for UI.
+
+        Returns:
+            Incompatibility matrix DataFrame.
+        """
+        return self.build_incompatibility_matrix(filters=filters)
 
     def build_incompatibility_matrix(
         self,

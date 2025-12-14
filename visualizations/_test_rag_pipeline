@@ -1,0 +1,18 @@
+digraph {
+	rankdir=LR
+	graph [bgcolor=white splines=ortho]
+	step_0 [label="User Query
+User asks a question
+
+tokens: 25" fillcolor="#E8F4F8" fontname=Helvetica shape=box style=filled]
+	step_1 [label="Retrieval
+Search KB
+
+top_k: 5" fillcolor="#B3E5FC" fontname=Helvetica shape=box style=filled]
+	step_2 [label="Answer
+Return response
+
+latency: 1.2s" fillcolor="#29B6F6" fontname=Helvetica shape=box style=filled]
+	step_0 -> step_1 [label="" arrowsize=1.5]
+	step_1 -> step_2 [label="" arrowsize=1.5]
+}
