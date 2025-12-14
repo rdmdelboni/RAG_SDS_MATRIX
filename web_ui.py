@@ -54,6 +54,10 @@ HTML_TEMPLATE = """
         .loading { color: #FFE66D; }
         .error { color: #FF6B6B; }
         .success { color: #90EE90; }
+        .results-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px; }
+        .results-header h2 { margin-bottom: 0; }
+        .btn-clear { padding: 6px 12px; font-size: 0.85em; width: auto; background: #555; border: 1px solid #777; color: #eee; }
+        .btn-clear:hover { background: #666; }
     </style>
 </head>
 <body>
@@ -90,14 +94,23 @@ HTML_TEMPLATE = """
         </div>
 
         <div class="section">
-            <h2>Results</h2>
-            <div id="results">Ready. Select an operation above.</div>
+            <div class="results-header">
+                <h2>Results</h2>
+                <button onclick="clearLogs()" class="btn-clear" aria-label="Clear results log">
+                    <span>🗑️</span> <span>Clear</span>
+                </button>
+            </div>
+            <div id="results" aria-live="polite" role="log">Ready. Select an operation above.</div>
         </div>
     </div>
 
     <script>
         const resultsDiv = document.getElementById('results');
         
+        function clearLogs() {
+            resultsDiv.innerHTML = '<div style="color: #888; font-style: italic;">Log cleared.</div>';
+        }
+
         function escapeHtml(text) {
             if (!text) return text;
             return text
