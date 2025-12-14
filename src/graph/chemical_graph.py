@@ -370,6 +370,9 @@ class ChemicalGraph:
     ) -> list[list[str]]:
         """Find reaction chains starting from a chemical.
 
+        Uses a DFS traversal following only 'incompatible_with' edges to
+        efficiently discover reaction chains without exploring unrelated relationships.
+
         Args:
             cas: Starting CAS number
             max_depth: Maximum chain length
@@ -385,34 +388,34 @@ class ChemicalGraph:
 
         chains = []
 
-        # Find all simple paths up to max_depth
-        for target in self.graph.nodes():
-            if target == cas:
-                continue
+        def dfs(current_path: list[str], current_depth: int) -> None:
+            if current_depth >= max_depth:
+                return
 
-            try:
-                paths = list(
-                    nx.all_simple_paths(
-                        self.graph, cas, target, cutoff=max_depth
-                    )
-                )
-                # Filter paths that follow incompatibility edges
-                for path in paths:
-                    is_incompatibility_chain = True
-                    for i in range(len(path) - 1):
-                        edges = self.graph.get_edge_data(path[i], path[i + 1])
-                        if not edges or not any(
-                            e.get("type") == "incompatible_with"
-                            for e in edges.values()
-                        ):
-                            is_incompatibility_chain = False
+            current_node = current_path[-1]
+
+            # Get neighbors connected via incompatibility edges
+            for neighbor in self.graph.neighbors(current_node):
+                if neighbor in current_path:  # Avoid cycles
+                    continue
+
+                edges = self.graph.get_edge_data(current_node, neighbor)
+                is_incompatible = False
+
+                # Check if any edge between these nodes is an incompatibility
+                if edges:
+                    for edge_data in edges.values():
+                        if edge_data.get("type") == "incompatible_with":
+                            is_incompatible = True
                             break
 
-                    if is_incompatibility_chain and len(path) > 1:
-                        chains.append(path)
+                if is_incompatible:
+                    new_path = current_path + [neighbor]
+                    chains.append(new_path)
+                    dfs(new_path, current_depth + 1)
 
-            except nx.NetworkXNoPath:
-                continue
+        # Start DFS from the source chemical
+        dfs([cas], 0)
 
         return chains
 
